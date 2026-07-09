@@ -1,0 +1,16 @@
+{
+  "name": "@openvideo/design-tokens",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo 'Obsidian' jet-black design tokens (ADR-0012, doc 22): colors, type, space, radius, elevation, motion — as TS, CSS variables, and a Tailwind preset.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./tailwind-preset": "./src/tailwind-preset.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "license": "Apache-2.0"
+}
