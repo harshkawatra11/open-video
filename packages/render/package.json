@@ -1,0 +1,22 @@
+{
+  "name": "@openvideo/render",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo render engine: turn execution-DAG nodes into concrete FFmpeg/Remotion command specs (PRD §15; Appendix B). Native vs PNG-sequence selection per ADR-0006.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "demo": "node examples/plan-reel.ts"
+  },
+  "dependencies": {
+    "@openvideo/edd": "workspace:*",
+    "@openvideo/compiler": "workspace:*",
+    "@openvideo/remotion": "workspace:*",
+    "@remotion/cli": "4.0.484"
+  },
+  "license": "Apache-2.0"
+}
