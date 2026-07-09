@@ -1,0 +1,15 @@
+{
+  "name": "reel-pipeline",
+  "version": "0.1.0",
+  "type": "template",
+  "entry": "index.ts",
+  "capabilities": ["edd:patch"],
+  "permissions": [],
+  "params": {
+    "punchInAmplitude": 0.03,
+    "punchInEase": "io",
+    "targetLUFS": -14
+  },
+  "dependencies": [],
+  "license": "Apache-2.0"
+}
