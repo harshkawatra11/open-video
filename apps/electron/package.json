@@ -1,0 +1,27 @@
+{
+  "name": "@openvideo/electron",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo Electron shell (ADR-0001). Spawns the daemon (via ELECTRON_RUN_AS_NODE, so a packaged app needs no separate Node.js install) and loads its served UI in a BrowserWindow. Currently loads the daemon's static cockpit fallback (apps/cockpit/public) — pointing it at the full Next.js Studio app is a follow-up (needs either a daemon-served static Studio export or a second managed process for `next start`), documented honestly rather than half-wired.",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "dev.openvideo.studio",
+    "productName": "OpenVideo",
+    "directories": { "output": "release" },
+    "files": ["src/**/*"],
+    "extraResources": [
+      { "from": "../daemon", "to": "daemon", "filter": ["src/**/*", "package.json"] },
+      { "from": "../cockpit/public", "to": "cockpit" }
+    ],
+    "win": { "target": "nsis" }
+  },
+  "license": "Apache-2.0"
+}
