@@ -1,0 +1,29 @@
+{
+  "name": "@openvideo/mcp-server",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo MCP server (PRD invariant 5, roadmap Phase 1/2): typed, gated tools over the existing engine (edd/compiler/render/project/library/integrations) so the Claude CLI can actually author/patch the EDD and render — never a raw shell for privileged actions.",
+  "type": "module",
+  "bin": {
+    "openvideo-mcp-server": "bin/mcp-stdio.ts"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.24.1",
+    "@openvideo/edd": "workspace:*",
+    "@openvideo/compiler": "workspace:*",
+    "@openvideo/render": "workspace:*",
+    "@openvideo/project": "workspace:*",
+    "@openvideo/library": "workspace:*",
+    "@openvideo/integrations": "workspace:*",
+    "@openvideo/transcribe": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}
