@@ -1,7 +1,0 @@
-{
-  "/library/page": "app/library/page.js",
-  "/page": "app/page.js",
-  "/brand/page": "app/brand/page.js",
-  "/agents/page": "app/agents/page.js",
-  "/studio/[id]/page": "app/studio/[id]/page.js"
-}
