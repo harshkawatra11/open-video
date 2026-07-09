@@ -1,0 +1,2554 @@
+================================================================================================
+ OPENVIDEO
+ PRODUCT REQUIREMENTS DOCUMENT (PRD) & MASTER ARCHITECTURE BLUEPRINT
+ An AI-Native, Intent-First, Programmable Video-Editing Operating System
+================================================================================================
+
+ Document title : OpenVideo - Product Requirements Document
+ Codename       : OpenVideo  (mirrors the repository directory "open-video" and the
+                  "Open Design" lineage it is modeled on)
+ Document type  : Master engineering blueprint (pre-implementation)
+ Status         : DRAFT v1.0 - for principal-engineer review prior to development
+ Audience       : Founding engineering team (systems, AI infra, video pipeline, HCI,
+                  build/devops, security), technical product, and external contributors
+ Format         : Plain-text engineering document (intentionally NOT markdown)
+ Companion docs : ./docs/  (deep-dive architecture set, decision records, appendices)
+                  ./docs/00-INDEX.md is the map of the companion set
+
+------------------------------------------------------------------------------------------------
+ HOW TO READ THIS DOCUMENT
+------------------------------------------------------------------------------------------------
+
+ This PRD is the single, self-contained source of truth. It is deliberately long and optimizes
+ for completeness over brevity: a senior engineering team should be able to begin implementation
+ immediately after reading it. Where a topic warrants more depth than a master document should
+ carry, the section ends with a "Deep dive:" pointer to the matching file under ./docs/.
+
+ Conventions used throughout:
+   - "MUST / SHOULD / MAY" carry their usual RFC-2119 weight.
+   - "EDD" = Edit Decision Document = the Video AST (the structured representation of an edit).
+   - "the daemon" = the single privileged local Node process (defined in Section 8).
+   - "the cockpit" = the Electron + Next.js desktop UI (defined in Section 8 and 18).
+   - "the CLI" = the Claude Code command-line tool, which OpenVideo spawns headless as its
+     reasoning backbone (defined in Section 9).
+   - Code, commands, and file trees are shown indented.
+   - Tables are rendered as aligned plain text.
+
+------------------------------------------------------------------------------------------------
+ FOUNDATIONAL DECISIONS (LOCKED) - quick reference
+------------------------------------------------------------------------------------------------
+
+   ID         Decision area        Choice
+   ---------  -------------------  --------------------------------------------------------------
+   ADR-0001   Desktop shell        Electron + Next.js (mirrors open-design; VS Code/Cursor line)
+   ADR-0002   Agent backbone       Spawn the Claude CLI headless (stream-json); reuses the
+                                    user's Claude Pro subscription auth (no per-token API bill)
+   ADR-0003   v1 north star        Agentic cockpit first; video = first pluggable vertical
+   ADR-0004   Installation         Tiered: core auto-installs; heavy items on first-use confirm
+   ADR-0005   Edit representation  Video AST / Edit Decision Document (EDD) + typed IR + DAG
+   ADR-0006   Render path          Remotion (React graphics) + FFmpeg composite; PNG-sequence
+                                    overlay fallback (proven in the proof-of-concept)
+   ADR-0007   Platform priority    Windows-first; macOS and Linux on the roadmap
+   ADR-0008   Privacy posture      Local-first; daemon is the sole privileged process; BYOK
+                                    proxy with SSRF protection
+
+   Default model: claude-opus-4-8.  Balanced: claude-sonnet-4-6.  Cheap subagents:
+   claude-haiku-4-5.  Effort levels low -> max; adaptive thinking.
+
+================================================================================================
+ TABLE OF CONTENTS
+================================================================================================
+
+   1.  Executive Summary
+   2.  Vision and Product Philosophy
+   3.  Goals
+   4.  Non-Goals
+   5.  Personas and Primary Use Cases
+   6.  Competitive Analysis
+   7.  Research Findings
+   8.  System Architecture
+   9.  Agent Architecture
+   10. Installation Architecture (the Installation Agent)
+   11. Video Pipeline (intent to render, end to end)
+   12. Compiler Design (Intent -> Plan -> EDD -> IR -> Execution DAG)
+   13. Data Models and Schemas
+   14. Execution Graph, Scheduling, and Caching
+   15. Rendering Engine
+   16. Prompt and Intent Engine
+   17. Workspace Design and File Structure
+   18. User Experience (UX)
+   19. Terminal Experience
+   20. Plugin SDK and Ecosystem
+   21. Developer Experience (DX)
+   22. Performance Engineering
+   23. Security Architecture
+   24. Testing and Quality Assurance
+   25. Deployment, Packaging, and Release
+   26. Future Vision and Roadmap
+   27. Engineering Risks
+   28. Open Questions
+   29. Trade-offs
+   30. Alternative Architectures
+   31. Decision Records (summary)
+   32. Appendices
+
+================================================================================================
+ 1. EXECUTIVE SUMMARY
+================================================================================================
+
+ 1.1  What OpenVideo is
+ ------------------------------------------------------------------------------------------------
+ OpenVideo is a desktop application that edits video the way Claude Code writes software: the
+ user states intent in natural language ("Turn this into a premium Instagram Reel", "Find every
+ dead frame", "Make the hook stronger", "Add agency-level captions"), and an autonomous,
+ Claude-powered multi-agent system researches the footage, plans the edit, compiles that plan
+ into a structured, executable representation, runs deterministic media tools (FFmpeg, Whisper,
+ yt-dlp, Remotion) to realize it, reviews its own output, and renders the final video.
+
+ The user is never required to manipulate a timeline by hand. The timeline is an output, not an
+ input. It is generated, inspectable, explainable, reproducible, and version-controlled.
+
+ OpenVideo is explicitly modeled, in spirit and architecture, on "Open Design" (the open-source,
+ local-first alternative to Claude Design). Where Open Design turns intent into HTML/CSS design
+ artifacts streamed into a sandboxed preview, OpenVideo turns intent into a Video AST that is
+ compiled into rendering instructions and realized as an MP4. The two share a backbone: an
+ Electron + Next.js shell over a single privileged local daemon that spawns a coding-agent CLI
+ as a child process, a brand/"system" file that constrains every output, a skills and plugin
+ ecosystem, an MCP tool surface, and a privacy-by-design local-first posture.
+
+ 1.2  Why it exists
+ ------------------------------------------------------------------------------------------------
+ Conventional non-linear editors (Premiere Pro, DaVinci Resolve, After Effects, CapCut) are
+ timeline-first: they assume a human operator who scrubs, trims, keyframes, and arranges clips.
+ They are extraordinarily capable but they are also slow for repeatable work, hard to automate,
+ and they encode no machine-readable "intent" - only the final arrangement. Programmatic tools
+ (FFmpeg, Remotion) are powerful and reproducible but require engineering skill and offer no
+ reasoning layer.
+
+ The proof-of-concept that motivated this project (documented in summary.txt at the repository
+ root, and distilled in docs/03-research-findings.md) demonstrated that a single agent, given a
+ shell and the right tools, can already produce an agency-grade vertical reel end to end:
+ transcribe Hindi/English speech, detect cuts, tonemap iPhone HLG footage to SDR, level audio to
+ broadcast loudness, generate word-level "Hinglish" karaoke captions and motion graphics in
+ Remotion, composite everything with FFmpeg, and export an Instagram-ready file. It also exposed
+ the real-world friction that a product must absorb: dependency installation on a fresh machine,
+ PATH and encoding quirks on Windows, a broken Remotion compositor binary that forced a
+ PNG-sequence + FFmpeg fallback, and the slow CPU-vs-GPU transcription trade-off.
+
+ OpenVideo productizes that proof-of-concept: it removes the friction (a tiered Installation
+ Agent that gives the machine "superpowers" before any editing begins), it makes the agentic
+ workflow first-class (a cockpit with a live terminal, model/effort/mode controls, and a usage
+ meter), and it makes every edit a structured, inspectable, version-controlled artifact rather
+ than a one-off sequence of shell commands.
+
+ 1.3  The core idea in one sentence
+ ------------------------------------------------------------------------------------------------
+ Intent-first, planning-first, agent-first, compiler-first: the user describes what they want,
+ agents reason about how to achieve it, the result is compiled to a Video AST, the AST is
+ compiled to an execution graph, and the graph is rendered - with every step explainable and
+ reproducible.
+
+ 1.4  v1 scope (the first shippable slice)
+ ------------------------------------------------------------------------------------------------
+ v1 is "the agentic cockpit": a beautiful, Claude-Code-like desktop application that wraps the
+ Claude CLI with a chat pane, a live "alive" terminal, a control surface (model picker:
+ Opus/Sonnet/Haiku; effort: low->max; plan/auto mode; permissions), a usage and limits meter,
+ a media drop zone, and the Installation Agent. Video editing ships as the first vertical built
+ on this cockpit - the productized reel pipeline from the proof-of-concept - delivered as the
+ flagship plugin. The cockpit is the hard, reusable core; video is what proves it is useful.
+ Later verticals (long-form editing, design, documents) plug into the same spine.
+
+ 1.5  What makes the architecture sound
+ ------------------------------------------------------------------------------------------------
+   - Separation of reasoning from execution. Claude (non-deterministic, creative) produces a
+     plan and an EDD; deterministic tools (FFmpeg/Remotion/Whisper) execute it. The boundary is
+     a typed, validated data structure, not free-form shell output.
+   - One privileged process. The daemon is the only component that touches the filesystem,
+     spawns processes, or reaches the network. The renderer is sandboxed. This is the
+     open-design security model and it contains blast radius.
+   - Everything is data before it is pixels. The EDD is JSON, diffable and git-versioned; the
+     compiler turns it into an execution DAG; the DAG is content-addressed and incrementally
+     cached. Re-rendering after a small change recomputes only what changed.
+   - Reuse the user's existing Claude entitlement. Spawning the Claude CLI headless means
+     OpenVideo runs on the user's Claude Pro subscription auth rather than billing per token
+     through an API key - a decisive cost and adoption advantage.
+   - Local-first. Footage never leaves the machine unless the user explicitly opts into a cloud
+     feature. This matters for creators handling unreleased or sensitive material.
+
+ 1.6  Primary risks (and where they are addressed)
+ ------------------------------------------------------------------------------------------------
+   - Claude CLI is a moving target (flags, event schema). Mitigation: a thin, versioned adapter
+     around the CLI event protocol (Section 9; Appendix C; ADR-0002).
+   - Native toolchain fragility on Windows (the PoC hit several). Mitigation: the Installation
+     Agent with verify/repair/rollback and the proven PNG-sequence render fallback (Sections 10,
+     15; ADR-0006).
+   - Agent reliability and cost. Mitigation: structured outputs, validation gates, a critique
+     loop, cheap-model subagents, prompt caching, and bounded autonomy (Sections 9, 12, 16, 22).
+   - Scope. Mitigation: cockpit-first with video as a vertical, and a phased roadmap (Section 26).
+
+ Deep dive: docs/01-vision-and-product.md, docs/03-research-findings.md.
+
+================================================================================================
+ 2. VISION AND PRODUCT PHILOSOPHY
+================================================================================================
+
+ 2.1  Vision statement
+ ------------------------------------------------------------------------------------------------
+ To make professional-grade video production a conversation. A creator should be able to point
+ OpenVideo at raw footage and a goal, and receive a polished, platform-ready video - while
+ retaining the ability to inspect, adjust, and re-run every decision the system made. OpenVideo
+ aspires to be to video what Claude Code is to software and what Open Design is to visual design:
+ an agent-native creative operating system, open-source and local-first.
+
+ 2.2  The five tenets
+ ------------------------------------------------------------------------------------------------
+   1. Intent-first. The interface is language. The user expresses goals; the system infers the
+      steps. Manual controls exist but are never required for common workflows.
+
+   2. Planning-first. Before touching a single frame, the system produces an explicit plan (a
+      creative blueprint) that the user can read, approve, or amend. This mirrors Claude Code's
+      "plan mode" and the proof-of-concept's blueprint step.
+
+   3. Agent-first. Work is performed by a team of specialized agents under a director, each with
+      a narrow remit, its own tools and memory, and a defined failure/retry strategy - not by a
+      single monolithic prompt.
+
+   4. Compiler-first. Every edit is compiled: intent -> plan -> Video AST (EDD) -> intermediate
+      representation -> execution graph -> render. Each stage is a typed, validated transform.
+      This is what makes edits reproducible, cacheable, and incremental.
+
+   5. Explainable and reversible. Every change is attributable ("the Retention Agent shortened
+      the lead-in by 0.5s to start on energy"), inspectable (open the EDD), reversible (git
+      history of the EDD), and reproducible (re-run the graph).
+
+ 2.3  Design principles
+ ------------------------------------------------------------------------------------------------
+   - Never expose raw complexity unnecessarily. The terminal should feel alive and legible
+      ("Analyzing footage...", "Detecting silence...", "Rendering captions...") while the gnarly
+      ffmpeg invocations live underneath, available on demand.
+   - Make the right thing the default. Sensible, opinionated defaults (e.g. -14 LUFS for social,
+      9:16 for reels) that the user can override by simply saying so.
+   - Determinism where it counts. Given the same EDD and assets, the render is byte-stable. Only
+      the reasoning layer is non-deterministic, and its output is always captured as data.
+   - Local-first, cloud-optional. Everything works offline except features that are inherently
+      networked (model weights download, optional cloud render). Privacy is the default.
+   - Open and composable. Skills, agents, plugins, templates, caption styles, and "look"
+      systems are plain files that anyone can author, inspect, and share - the open-design model.
+   - Respect the user's entitlement and hardware. Use the Claude subscription the user already
+      has; detect and exploit the GPU they already own; never surprise them with multi-gigabyte
+      downloads.
+
+ 2.4  What "feels like" the product should evoke
+ ------------------------------------------------------------------------------------------------
+ The cockpit should feel like Claude Code and Cursor (a calm, intelligent terminal + chat that
+ does real work), with the visual craft of Open Design / Claude Design (premium, restrained,
+ brand-aware), the timeline power of Premiere/Resolve hidden behind language, the motion-graphics
+ capability of After Effects/Remotion expressed as components, and the reliability of a compiler.
+
+ Deep dive: docs/01-vision-and-product.md.
+
+================================================================================================
+ 3. GOALS
+================================================================================================
+
+ 3.1  Product goals
+ ------------------------------------------------------------------------------------------------
+   G1. A first-time user on a fresh Windows machine can install OpenVideo, let it prepare itself,
+       drop in a clip, type one sentence, and get a polished vertical reel - with no manual tool
+       installation and no timeline interaction.
+   G2. The cockpit is a genuinely pleasant general agentic environment (chat + live terminal +
+       model/effort/mode controls + usage meter) even before video is involved.
+   G3. Every edit the system makes is explainable, inspectable (the EDD), reversible (versioned),
+       and reproducible (re-runnable).
+   G4. Common workflows (caption, trim dead air, punch-ins, grade, hook rebuild, b-roll, export)
+       are one-sentence operations.
+   G5. The system is extensible: third parties can ship agents, skills, caption styles,
+       transitions, templates, "look" systems, and renderers as plugins.
+
+ 3.2  Technical goals
+ ------------------------------------------------------------------------------------------------
+   T1. Reasoning and execution are cleanly separated by a typed, validated EDD.
+   T2. The Claude CLI is integrated through a thin, versioned adapter so CLI changes do not ripple
+       through the codebase.
+   T3. Rendering is incremental and content-addressed: a small change re-renders only affected
+       nodes.
+   T4. The render pipeline degrades gracefully: GPU when available, CPU fallback always; native
+       compositor when healthy, PNG-sequence + FFmpeg fallback when not.
+   T5. The daemon is the only privileged process; the renderer is sandboxed; secrets are
+       encrypted at rest; outbound proxy requests are SSRF-guarded.
+   T6. Cold-start cost is minimized: prompt caching, cheap-model subagents, and bounded effort.
+   T7. The system recovers from crashes without losing project state or in-flight renders.
+
+ 3.3  Explicit success criteria (measurable)
+ ------------------------------------------------------------------------------------------------
+   - Time-to-first-render (fresh machine, 60s clip, "make a reel"): target < 15 minutes including
+     dependency setup on a mid-range NVIDIA laptop; < 5 minutes on a prepared machine.
+   - Caption sync accuracy: <= 80 ms vs word-level timestamps on spot checks.
+   - Render determinism: identical EDD + assets -> identical output hash (video stream), modulo
+     encoder non-determinism, which is pinned where feasible.
+   - Incremental re-render: changing one caption style re-renders only the caption track, not the
+     whole timeline.
+   - Crash recovery: killing the app mid-render loses no committed EDD state and resumes or
+     cleanly restarts the render.
+
+ Deep dive: docs/01-vision-and-product.md.
+
+================================================================================================
+ 4. NON-GOALS
+================================================================================================
+
+ The following are explicitly out of scope for the foreseeable roadmap, or for v1 specifically.
+ Stating them prevents scope creep and sets reviewer expectations.
+
+ 4.1  Permanent non-goals (not what OpenVideo is)
+ ------------------------------------------------------------------------------------------------
+   - Not a manual timeline NLE. OpenVideo will expose inspection and fine adjustment, but it is
+     not trying to out-Premiere Premiere as a mouse-driven editor. If a user wants frame-by-frame
+     manual cutting as the primary mode, a GUI NLE is the better tool.
+   - Not a frontier model lab. OpenVideo orchestrates models (Claude for reasoning; Whisper for
+     ASR; optional image/video/audio generators via plugins). It does not train models.
+   - Not a hosted SaaS in v1. It is a local desktop app. Cloud rendering and collaboration are
+     later, opt-in additions - not the foundation.
+   - Not a general media-asset-management (MAM) system for studios. It manages a project's assets
+     well; it is not an enterprise DAM/MAM replacement.
+
+ 4.2  v1 non-goals (deferred, on the roadmap)
+ ------------------------------------------------------------------------------------------------
+   - Real-time multi-user collaboration (deferred; see Section 26).
+   - Cloud / distributed rendering (deferred; local render only in v1).
+   - macOS and Linux builds (Windows-first; cross-platform is a fast follow - ADR-0007).
+   - Long-form, multi-hour, multi-track project scale (v1 targets short-form vertical first).
+   - A mobile client (long-term).
+   - Generative video (text-to-video) as a core feature (available only via optional plugins,
+     and only with copyright-safe, user-authorized providers).
+
+ 4.3  Ethical / policy non-goals
+ ------------------------------------------------------------------------------------------------
+   - No scraping of copyrighted footage, music, or SFX. B-roll and audio are either
+     user-supplied, generated (vector/AI with proper licensing), or pulled from explicitly
+     royalty-free sources. (This constraint is honored throughout the proof-of-concept and is
+     codified in the B-roll and Music/SFX agents - Section 9.)
+   - No deceptive deepfakes or non-consensual likeness manipulation.
+
+ Deep dive: docs/01-vision-and-product.md.
+
+================================================================================================
+ 5. PERSONAS AND PRIMARY USE CASES
+================================================================================================
+
+ 5.1  Personas
+ ------------------------------------------------------------------------------------------------
+   P1. The solo creator / educator (primary). Records talking-head content on a phone; wants
+       agency-grade reels without learning Premiere or hiring an editor. Technically comfortable
+       but not an editor. (This is the persona behind the proof-of-concept: a legal educator's
+       vertical reel.)
+   P2. The developer-creator / power user. Comfortable in a terminal; wants automation,
+       reproducibility, batch processing, and the ability to script and extend. Values the
+       cockpit and the plugin SDK.
+   P3. The small agency / freelancer. Produces many short videos to a house style; wants a
+       reusable "look" system, templates, and fast turnaround.
+   P4. The plugin/skill author (ecosystem). Builds and shares caption styles, transitions,
+       templates, agents, and "look" systems.
+
+ 5.2  Primary use cases (v1 + near term)
+ ------------------------------------------------------------------------------------------------
+   UC1. "Turn this clip into a premium Instagram Reel."  (the flagship end-to-end pipeline)
+   UC2. "Make this feel like Alex Hormozi / Ali Abdaal / MagnatesMedia."  (style transfer via a
+        look system + pacing/caption presets)
+   UC3. "Find every dead frame / silence / filler word and tighten the pacing."
+   UC4. "Add agency-level captions" (word-level karaoke, emphasis on key terms).
+   UC5. "Replace the weak hook" / "increase retention" (hook rebuild, first-3-seconds analysis).
+   UC6. "Generate B-roll" (copyright-safe vector/graphics or licensed stills, synced to speech).
+   UC7. "Level the audio to YouTube/Instagram standard and clean up background noise."
+   UC8. "Re-grade this iPhone HLG footage to a clean SDR look."
+   UC9. "Swap the audio for this clean recording and keep it in sync."
+   UC10. "Export this for Instagram / TikTok / YouTube Shorts."  (platform presets)
+
+ 5.3  The general (non-video) cockpit use cases (v1 spine)
+ ------------------------------------------------------------------------------------------------
+   UC11. "Prepare my machine" (the Installation Agent gives the box its superpowers).
+   UC12. A general agentic terminal/chat over the Claude CLI: pick model, effort, plan/auto mode;
+         watch a live terminal; track usage/limits - useful even outside video.
+
+ Deep dive: docs/01-vision-and-product.md, docs/13-ux-and-terminal.md.
+
+================================================================================================
+ 6. COMPETITIVE ANALYSIS
+================================================================================================
+
+ The goal here is not to copy any system but to extract the architectural lesson each one
+ teaches. Full notes are in docs/02-competitive-analysis.md; this is the distilled version.
+
+ 6.1  Agentic / developer tools
+ ------------------------------------------------------------------------------------------------
+   Claude Code  - The model for the whole product. Headless mode (stream-json), sessions,
+                  subagents, skills, hooks, MCP, plan mode, permission modes, a usage meter.
+                  LESSON: a CLI agent harness is a reusable backbone; spawn it, don't rebuild it.
+                  OpenVideo spawns it (ADR-0002).
+   Claude Design / Open Design - The model for the shell and ecosystem. Electron + Next.js over a
+                  single privileged daemon that spawns the agent CLI; a DESIGN.md brand system;
+                  SKILL.md skills; a plugin marketplace with manifests; a stdio MCP server; a
+                  BYOK proxy with SSRF guards; sandboxed iframe preview; pnpm monorepo.
+                  LESSON: this exact topology generalizes from "design artifacts" to "video
+                  artifacts". OpenVideo adopts it wholesale and swaps the artifact type.
+   Cursor / VS Code - The model for the editor UX and extension ecosystem. A fast, keyboard-first
+                  shell; an extension API; a language-server-style separation of concerns.
+                  LESSON: keep the shell thin and the intelligence in services; design the plugin
+                  API early; the Language Server Protocol pattern (Section 12) maps onto an
+                  "Edit Server Protocol" between cockpit and daemon.
+
+ 6.2  Non-linear editors and motion tools
+ ------------------------------------------------------------------------------------------------
+   Adobe Premiere Pro - Timeline-first NLE; project file is a proprietary arrangement.
+                  LESSON: the timeline is the wrong primary interface for intent; but the
+                  underlying concepts (tracks, clips, transitions, effects, keyframes) are the
+                  right vocabulary for the EDD.
+   DaVinci Resolve - Best-in-class color and audio (Fairlight); node-based color grading.
+                  LESSON: a node graph is the right mental model for effects/render; color is a
+                  first-class stage; pursue parity on grade and loudness, not on manual editing.
+   After Effects - Composition + layers + keyframes; expression language.
+                  LESSON: motion graphics are programs. Remotion (React) is our AE-equivalent;
+                  the Motion/Animation agents author components, not hand-keyframed layers.
+   CapCut - Consumer auto-captions, templates, one-tap effects; mobile-first.
+                  LESSON: the consumer expectation bar for auto-captions and templates is high;
+                  OpenVideo must match it on output quality while exceeding it on control.
+
+ 6.3  Programmable media stack
+ ------------------------------------------------------------------------------------------------
+   Remotion - React -> deterministic frames -> MP4. The graphics/caption/overlay engine.
+                  LESSON: declarative, component-based, deterministic motion graphics are ideal as
+                  a compile target. CAVEAT: its native compositor binary can fail on some Windows
+                  setups (the PoC hit this) - hence the PNG-sequence + FFmpeg fallback (ADR-0006).
+   FFmpeg / FFprobe - The execution workhorse: cut, trim, crop, scale, speed, concat, overlay,
+                  filtergraphs, loudnorm, afftdn, zscale tonemap, encode. FFprobe = inspection.
+                  LESSON: FFmpeg is the deterministic core of the render. Wrap it behind typed
+                  tool calls; never hand the model a raw shell for it.
+   Whisper / OpenAI Whisper / Faster-Whisper / WhisperX - ASR + timestamps; word-level alignment.
+                  LESSON: large models on CPU are slow (the PoC: 40+ min); GPU is 30-50x faster;
+                  word-level alignment needs a capable model or a dedicated aligner. Make model
+                  size and device a tiered, user-aware decision.
+   yt-dlp - Media retrieval (for copyright-safe sources the user is entitled to).
+                  LESSON: import is a distinct, sandboxed capability with its own permissions.
+
+ 6.4  Generative and orchestration systems
+ ------------------------------------------------------------------------------------------------
+   HeyGen HyperFrames - HTML+CSS+GSAP -> deterministic MP4; talking-head caption specialty.
+                  LESSON: an alternative/complementary render engine; good for a "signature
+                  moment" embed. Integrate as an optional renderer plugin (cut-sensitive; use on
+                  a single continuous sub-take).
+   Runway / ElevenLabs - Generative video / voice. LESSON: powerful but licensing- and
+                  cost-sensitive; integrate only as opt-in, authorized plugins.
+   ComfyUI - Node-graph for generative image/video pipelines. LESSON: a node graph is a proven UX
+                  for media pipelines and validates our execution-graph model; a possible advanced
+                  "graph view" for power users.
+   n8n - Workflow automation. LESSON: the automation/workflow engine pattern (triggers, steps,
+                  retries) informs OpenVideo's batch/automation features (Section 20, 26).
+
+ 6.5  Compiler / language infrastructure (the conceptual core)
+ ------------------------------------------------------------------------------------------------
+   Git - Content-addressed, diffable history. LESSON: version the EDD in git; edits become
+                  commits; reproducibility and rollback come for free.
+   MCP (Model Context Protocol) - Standard tool/resource surface for agents. LESSON: expose all
+                  media tools through one OpenVideo MCP server; agents call tools, not shells.
+   Language Server Protocol (LSP) - Decouples editor from language intelligence over a documented
+                  protocol. LESSON: define an analogous protocol between cockpit and daemon (the
+                  "Edit/Session protocol", Sections 8, 12).
+   Tree-sitter / AST systems / compiler pipelines - Parse -> AST -> IR -> codegen, with passes.
+                  LESSON: this is precisely the EDD -> IR -> execution-DAG model. Treat editing as
+                  compilation: typed nodes, validated transforms, optimization passes, caching.
+
+ 6.6  Summary table - what we take from each
+ ------------------------------------------------------------------------------------------------
+   System            Take-away adopted by OpenVideo
+   ----------------  --------------------------------------------------------------------------
+   Claude Code       Spawn the CLI as the agent backbone; subagents/skills/MCP/plan mode/usage
+   Open Design       Electron+Next.js+daemon topology; system file; plugins; sandboxed preview
+   Cursor / VS Code  Thin keyboard-first shell; early, stable plugin API; LSP-style protocol
+   Premiere          EDD vocabulary (tracks/clips/transitions/effects) - but not timeline-first
+   Resolve           First-class color + loudness; node-graph render model
+   After Effects     Motion graphics as programs -> Remotion components
+   CapCut            High output-quality bar for captions/templates
+   Remotion          Declarative deterministic graphics compile target (+ fallback for its binary)
+   FFmpeg/FFprobe    Deterministic render/inspection core behind typed tool calls
+   Whisper family    Tiered ASR (model size x device); word-level alignment strategy
+   yt-dlp            Import as a sandboxed, permissioned capability
+   HyperFrames       Optional signature-moment renderer plugin
+   ComfyUI           Validates node-graph execution model; optional power-user graph view
+   Git               Version the EDD; edits-as-commits; rollback/reproducibility
+   MCP               One tool surface for all agents
+   LSP               Documented cockpit<->daemon protocol
+   Tree-sitter/AST   Editing-as-compilation; passes; caching
+
+ Deep dive: docs/02-competitive-analysis.md.
+
+================================================================================================
+ 7. RESEARCH FINDINGS
+================================================================================================
+
+ 7.1  Findings from the proof-of-concept (summary.txt)
+ ------------------------------------------------------------------------------------------------
+ The PoC session produced a real, finished, agency-grade vertical reel and, in doing so, surfaced
+ the concrete engineering realities OpenVideo must absorb. Key findings:
+
+   F1. The end-to-end pipeline works today with off-the-shelf tools. Sequence proven: extract
+       audio -> transcribe (Whisper) -> detect cuts (FFmpeg scene/frame-diff) -> smart-cut
+       (silencedetect) -> tonemap HLG->SDR + grade (zscale/tonemap) -> level audio (two-pass
+       loudnorm to -14 LUFS) + denoise (afftdn) -> generate word-level captions + motion graphics
+       (Remotion) -> composite (FFmpeg) -> export H.264/AAC 1080x1920. OpenVideo's job is to make
+       this reliable, repeatable, and conversational.
+
+   F2. Installation is the first real obstacle. On a fresh Windows box the agent had to install
+       ffmpeg, yt-dlp (winget), and Whisper (pip on Python 3.14, with a PATH fix and PYTHONUTF8=1
+       to avoid cp1252 console errors). CONCLUSION: a dedicated, tiered Installation Agent with
+       hardware detection, PATH repair, verification, and rollback is essential (Section 10).
+
+   F3. GPU matters enormously for ASR. large-v3 on CPU took 40+ minutes for ~66s of audio;
+       an RTX-class GPU would cut that to under a minute, but the default PyTorch build was CPU-
+       only and the CUDA build did not have wheels for the very new Python 3.14. CONCLUSION:
+       device/model selection must be a deliberate, tiered, user-aware decision; bundle a known-
+       good Python/torch toolchain rather than relying on the system Python (Section 10, 15).
+
+   F4. Whisper's small model is not good enough for word-level timing; large-v3 gives accurate
+       segment timings and text. CONCLUSION: anchor captions to a capable model's segment timings
+       and distribute words within segments (or use a dedicated aligner) - and treat the
+       authoritative transcript as the source of truth, overriding the ASR text when needed
+       (Section 9 Transcript/Caption agents).
+
+   F5. Hindi/English code-switching and "Hinglish" romanization is a real requirement. Mechanical
+       Devanagari->Roman transliteration fails (schwa-deletion -> "Aja hama" instead of "aaj
+       hum"). CONCLUSION: romanization is a reasoning task (the model maps words while preserving
+       timing), not a lookup; keep emphasis on legal/English terms (Section 9 Caption agent).
+
+   F6. The Remotion native compositor binary can fail to run on a given Windows machine (it did:
+       the bundled ffprobe/Rust binary crashed regardless of input). The workaround that shipped
+       the final video: render the graphics/captions as a transparent PNG sequence via headless
+       Chrome (which worked) and composite over the graded a-roll with the system FFmpeg.
+       CONCLUSION: the render engine MUST support both the native Remotion path and the
+       PNG-sequence + FFmpeg fallback, and detect/choose automatically (ADR-0006, Section 15).
+
+   F7. Color management is non-trivial and worth it. iPhone footage is HLG/HDR; naive handling
+       looks washed out. A zscale/tonemap chain to Rec.709 SDR plus a light grade produced a
+       clearly better, phone-consistent image. CONCLUSION: tonemap + grade is a first-class
+       pipeline stage with verifiable before/after frames (Section 15 Color).
+
+   F8. Audio leveling to a platform standard (-14 LUFS) via two-pass loudnorm, plus gentle
+       denoise, is a reliable, high-value, fast operation. CONCLUSION: make it a default,
+       one-sentence operation with measured verification (Section 9 Audio agent; Appendix B).
+
+   F9. "Alive" progress reporting and background execution are essential UX. The PoC ran long
+       jobs in the background and reported status; users repeatedly asked "done yet?".
+       CONCLUSION: the cockpit's live terminal, a render queue with progress, and notifications
+       are core, not cosmetic (Sections 14, 19).
+
+   F10. Reproducibility requires capturing the plan as data. The PoC wrote a blueprint and a
+       formatter script before rendering. CONCLUSION: formalize the blueprint as the EDD and
+       version it (Sections 12, 13, 17).
+
+ 7.2  Findings from the open-design study
+ ------------------------------------------------------------------------------------------------
+   F11. The Electron + Next.js + single-privileged-daemon topology is a proven shape for an
+        agent-native desktop creative tool. The daemon is the only privileged process; it spawns
+        the agent CLI as a child in isolated project directories; the renderer is sandboxed.
+   F12. A "system file" (DESIGN.md) that constrains every output is a powerful, simple primitive.
+        OpenVideo adopts the analog: a STYLE.md "look/brand" system per project (Section 14).
+   F13. Skills (SKILL.md) and plugins (manifest-described folders) make the system composable and
+        community-extensible without code changes to the core.
+   F14. An MCP stdio server is the clean way to expose tools to whichever agent CLI is running.
+   F15. A BYOK proxy with SSRF protection and a sandboxed iframe preview are the right security
+        primitives for "agent generates content -> show it safely".
+
+ 7.3  Findings from the Claude CLI / Agent SDK study
+ ------------------------------------------------------------------------------------------------
+   F16. The Claude CLI runs headless and emits structured events: spawn with
+        `claude -p "<prompt>" --output-format stream-json --input-format stream-json`, resume
+        with `--resume <sessionId>` / `--session-id`, register MCP servers, define subagents and
+        skills as files, and apply permission modes. This is a complete agent backbone.
+   F17. Spawning the CLI runs on the user's Claude subscription auth (cost advantage). The Claude
+        Agent SDK is the same engine as a library but is typically API-key billed; it is the
+        documented alternative, not the v1 default (ADR-0002).
+   F18. Model and effort are first-class controls: default claude-opus-4-8; claude-sonnet-4-6 for
+        balanced; claude-haiku-4-5 for cheap subagents; effort low->max; adaptive thinking. These
+        map directly onto the cockpit's control surface (Section 18) and the agent roster
+        (Section 9).
+   F19. Prompt caching, subagents with isolated context, and bounded effort are the levers for
+        controlling cost and latency in a long-running agentic session (Section 22).
+
+ 7.4  Net research conclusion
+ ------------------------------------------------------------------------------------------------
+ The components exist and are proven; the value OpenVideo adds is (a) removing setup friction,
+ (b) elevating the agentic workflow to a first-class, explainable, reproducible product, and
+ (c) treating editing as compilation over a typed Video AST. Nothing in the plan requires
+ inventing new core technology; it requires integrating proven technology behind a sound
+ architecture.
+
+ Deep dive: docs/03-research-findings.md.
+
+================================================================================================
+ 8. SYSTEM ARCHITECTURE
+================================================================================================
+
+ 8.1  Architectural overview - the four planes
+ ------------------------------------------------------------------------------------------------
+ OpenVideo is organized into four cooperating planes. Reasoning is separated from execution by a
+ typed data boundary (the EDD). Only the daemon is privileged.
+
+     +--------------------------------------------------------------------------------------+
+     |  PRESENTATION PLANE  -  The Cockpit  (Electron renderer: Next.js / React)            |
+     |  chat . live terminal . control surface (model/effort/mode/permissions) .            |
+     |  usage+limits meter . media drop . project workspace . Remotion preview (sandboxed   |
+     |  iframe) . EDD inspector / diff viewer                                                |
+     +-----------------------------------------+--------------------------------------------+
+                                               |  Edit/Session Protocol (IPC + SSE)
+                                               v
+     +--------------------------------------------------------------------------------------+
+     |  CONTROL PLANE  -  The Daemon  (single privileged Node 24 process; Electron main or  |
+     |  a forked service)                                                                    |
+     |  session mgr . render queue + workers . OpenVideo MCP server (stdio) . tool manager . |
+     |  installation agent . workspace/file ops . version control (git) . BYOK proxy (SSRF  |
+     |  guarded) . cache manager . telemetry/diagnostics . crash recovery                    |
+     +------------------+-----------------------------------------+---------------------------+
+                        | spawn (stdio, stream-json)              | spawn (child processes)
+                        v                                         v
+     +--------------------------------+        +-----------------------------------------------+
+     |  REASONING PLANE               |        |  EXECUTION PLANE  -  Deterministic tools      |
+     |  Claude CLI (headless)         |  MCP   |  FFmpeg . FFprobe . Whisper/faster-whisper .  |
+     |  Director + subagents +        |<------>|  Remotion (Chrome headless) . yt-dlp .        |
+     |  skills + hooks + permissions  |  tools |  ImageMagick . (optional gen/cloud plugins)   |
+     +--------------------------------+        +-----------------------------------------------+
+                        |                                         |
+                        +--------------------+--------------------+
+                                             v
+                       +-------------------------------------------------+
+                       |  DATA PLANE  -  Project workspace on disk        |
+                       |  EDD (Video AST, git-versioned) . assets .       |
+                       |  transcripts . plans . cache (content-addressed)|
+                       |  . renders . exports . logs . memory            |
+                       +-------------------------------------------------+
+
+ The cockpit never touches the filesystem, spawns a process, or makes a network call directly.
+ It speaks only to the daemon. The Claude CLI reasons and calls tools (via MCP) but does not
+ itself encode the product's privileged logic. Deterministic tools do the heavy media work.
+
+ 8.2  The Cockpit (presentation plane)
+ ------------------------------------------------------------------------------------------------
+   Stack: Electron (Chromium + Node 24) shell hosting a Next.js / React renderer. The renderer
+   runs sandboxed (contextIsolation on, nodeIntegration off); all privileged actions go through a
+   typed preload bridge to the daemon.
+   Responsibilities:
+     - Render the chat, the live "alive" terminal, the control surface, the usage meter, the
+       media drop zone, the project/workspace browser, the Remotion preview (sandboxed iframe),
+       and the EDD inspector/diff viewer.
+     - Translate user intent (text, drag-drop, control changes) into Edit/Session Protocol
+       requests to the daemon.
+     - Stream and render daemon events (agent thinking, tool progress, render progress, errors)
+       over SSE.
+   Explicitly NOT responsible for: filesystem access, process spawning, network egress, secret
+   storage. (See Section 23 Security.)
+   Deep dive: docs/13-ux-and-terminal.md, docs/04-system-architecture.md.
+
+ 8.3  The Daemon (control plane) - the only privileged process
+ ------------------------------------------------------------------------------------------------
+   Stack: a single long-lived Node 24 process. In the simplest topology it is the Electron main
+   process; for robustness it MAY be a forked/utility service so a renderer crash never takes
+   down in-flight renders. It exposes a local HTTP + SSE interface (loopback only, token-guarded)
+   for the cockpit, exactly as open-design's daemon does.
+   Core modules:
+     - Session Manager: owns Claude CLI sessions (create/resume/interrupt), maps cockpit
+       conversations to CLI session IDs, manages plan/auto mode and permission prompts.
+     - Tool Manager + OpenVideo MCP server: registers and runs the deterministic media tools as
+       MCP tools (Section 8.6); enforces per-tool permissions and sandboxing.
+     - Render Queue + Background Workers: schedules and runs render jobs (the execution DAG;
+       Section 14), reports progress, supports cancellation, survives renderer restarts.
+     - Installation Agent: hardware detection and tiered dependency provisioning (Section 10).
+     - Workspace / File Ops: all reads/writes within the project sandbox; path validation.
+     - Version Control: git-backs the EDD and key project state; every applied edit is a commit.
+     - BYOK Proxy: optional outbound proxy for any user-configured OpenAI-compatible or provider
+       endpoint (for plugins), with SSRF protection (Section 23).
+     - Cache Manager: content-addressed render/asset cache (Section 14).
+     - Telemetry / Diagnostics / Crash Recovery: local logs, opt-in telemetry, journaled state
+       for resume-after-crash (Section 24, 25).
+   Deep dive: docs/04-system-architecture.md.
+
+ 8.4  The Reasoning Plane (the Claude CLI)
+ ------------------------------------------------------------------------------------------------
+   OpenVideo spawns the Claude CLI headless as a child of the daemon (ADR-0002). The daemon
+   constructs the prompt and options (model, effort, permission mode, MCP config, the project's
+   STYLE.md and EDD as context), spawns the CLI in stream-json mode, and parses the event stream
+   (thinking, tool_use, tool_result, usage, result). The Director agent and all specialized
+   subagents are defined as Claude Code subagents + skills shipped inside the OpenVideo project
+   scaffold (Section 9). The CLI calls deterministic tools through the OpenVideo MCP server.
+   Auth: the CLI runs on the user's Claude subscription (no per-token API key required by
+   default). The Claude Agent SDK is the documented alternative for environments that prefer
+   an in-process, API-keyed library (ADR-0002).
+   Deep dive: docs/05-agent-architecture.md, docs/11-prompt-and-intent-engine.md, Appendix C.
+
+ 8.5  The Video Engine and Compiler
+ ------------------------------------------------------------------------------------------------
+   The engine turns intent into a render. It comprises: the Intent/Prompt engine (Section 16),
+   the Planner (Section 9), the EDD/Video-AST and its schema (Section 13), the compiler that
+   lowers EDD -> IR -> execution DAG (Section 12), and the render scheduler/executor (Section 14)
+   that drives the rendering engine (Section 15). It lives in the daemon (so it is privileged and
+   deterministic), and is invoked both directly (deterministic recompiles) and by agents via MCP
+   tools (e.g. "apply this EDD patch", "render preview of segment").
+   Deep dive: docs/07-video-engine-and-compiler.md, docs/08-execution-and-render-graph.md.
+
+ 8.6  The Tool Surface - the OpenVideo MCP server
+ ------------------------------------------------------------------------------------------------
+   All deterministic capability is exposed to agents as MCP tools through a single stdio MCP
+   server run by the daemon. Representative tools (full catalog in docs/05 and Appendix D):
+     probe(media)                 -> media metadata (ffprobe)
+     extract_audio(media)         -> wav
+     transcribe(audio, opts)      -> transcript + segment/word timings (Whisper/faster-whisper)
+     detect_silence(audio, opts)  -> silence/hesitation ranges
+     detect_cuts(video, opts)     -> cut timestamps + scores
+     tonemap_grade(video, look)   -> graded SDR a-roll (zscale/tonemap + grade)
+     level_audio(audio, target)   -> loudnorm + denoise (two-pass)
+     edd_apply_patch(patch)       -> mutate the EDD (validated)
+     edd_render(range, quality)   -> render preview/final via the compiler+engine
+     remotion_render(comp, props) -> graphics/caption PNG sequence or MP4
+     ffmpeg_compose(spec)         -> composite/encode (typed spec, not raw shell)
+     fetch_media(url)             -> sandboxed import (yt-dlp), permission-gated
+   Tools are typed, validated, permissioned, and sandboxed. Agents never receive a raw shell for
+   privileged actions; a constrained bash tool MAY exist for breadth but high-risk actions are
+   promoted to dedicated, gated tools (the agent-design principle from the Claude API guidance).
+   Deep dive: docs/05-agent-architecture.md, docs/15-plugin-sdk.md.
+
+ 8.7  Protocols and IPC
+ ------------------------------------------------------------------------------------------------
+   - Cockpit <-> Daemon: the "Edit/Session Protocol" - a documented request/response + event
+     protocol (LSP-inspired). Requests over local HTTP (loopback, bearer-token), events over SSE.
+     Message families: session.* (start/resume/interrupt), intent.* (submit), plan.* (propose/
+     approve/amend), edd.* (get/patch/diff/history), render.* (request/progress/cancel),
+     install.* (status/approve), control.* (model/effort/mode/permission), usage.* (meter).
+   - Daemon <-> Claude CLI: spawn + stdio stream-json (Appendix C documents the event schema and
+     the versioned adapter that insulates the codebase from CLI changes).
+   - Daemon <-> Tools: child processes with typed argument construction, captured stdout/stderr,
+     progress parsing, timeouts, and cancellation.
+   - Daemon <-> Disk: all within the project sandbox; content-addressed cache keys.
+   Deep dive: docs/04-system-architecture.md, Appendix C.
+
+ 8.8  Process and concurrency model
+ ------------------------------------------------------------------------------------------------
+   - Electron main (or forked daemon): single privileged event loop; long jobs offloaded to
+     worker threads / child processes so the loop stays responsive.
+   - Render workers: a bounded pool (sized to CPU/GPU) drains the render queue; each job is a
+     subgraph of the execution DAG. GPU-bound steps (NVENC/CUDA) and CPU-bound steps are
+     scheduled distinctly (Section 22).
+   - Claude CLI: one child process per active session; subagents are managed by the CLI itself.
+   - Backpressure: the queue caps concurrent renders and transcriptions to avoid thrashing;
+     progress and ETA are streamed to the cockpit.
+
+ 8.9  End-to-end data flow (the canonical sequence)
+ ------------------------------------------------------------------------------------------------
+   1. User drops a clip and types intent in the cockpit.
+   2. Cockpit -> daemon: intent.submit (with project + control settings).
+   3. Daemon ensures dependencies (Installation Agent) and builds the prompt/options.
+   4. Daemon spawns/*resumes* the Claude CLI session; streams events to the cockpit.
+   5. Director plans (plan mode): produces a creative blueprint; cockpit shows it for approval.
+   6. On approval, agents call MCP tools to research footage and assemble/patch the EDD.
+   7. Daemon validates each EDD patch (schema + lint) and commits it to git.
+   8. Compiler lowers EDD -> IR -> execution DAG; scheduler renders (incremental, cached).
+   9. Preview frames/clips stream to the sandboxed preview; QA/Critique agent reviews.
+   10. On acceptance, the Export agent produces the final platform-optimized file; daemon
+       reports completion; the EDD + render are versioned.
+
+ 8.10  Subsystem registry (where every required subsystem lives)
+ ------------------------------------------------------------------------------------------------
+   Subsystem                     Plane / module                         Section / doc
+   ---------------------------   ------------------------------------   --------------------------
+   Intent Understanding Engine   Daemon / Prompt+Intent engine          16 / docs/11
+   Planning Engine               Reasoning / Planner agent              9, 12 / docs/05,07
+   Creative Director Agent       Reasoning / Director                   9 / docs/05
+   Editing Agent(s)              Reasoning / specialized subagents      9 / docs/05
+   Timeline Generator            Daemon / compiler (EDD builder)        12 / docs/07
+   Rendering Compiler            Daemon / compiler                      12 / docs/07
+   Execution Planner             Daemon / scheduler                     14 / docs/08
+   Prompt Interpreter            Daemon / prompt engine                 16 / docs/11
+   Video AST                     Data / EDD                             13 / docs/10
+   Scene Graph / Motion Graph    Data / EDD substructures               12,13 / docs/07,10
+   Transcript Engine             Execution / Whisper + Transcript agent 9,15 / docs/05,09
+   Caption Engine                Reasoning+Execution / Caption agent    9,15 / docs/05,09
+   Color Engine                  Execution / tonemap_grade tool         15 / docs/09
+   Audio Engine                  Execution / level_audio + Audio agent  9,15 / docs/05,09
+   B-roll Engine                 Reasoning / B-roll agent + plugins     9,20 / docs/05,15
+   Animation Engine              Execution / Remotion + Motion agent    9,15 / docs/05,09
+   Asset Manager                 Daemon / workspace + cache             17,14 / docs/12,08
+   AI Memory                     Data / memory dir + agent memory       9,16 / docs/05,11
+   Prompt History                Data / session + git                   17 / docs/12
+   Version Control               Daemon / git                           17 / docs/12
+   Project Workspace             Data / project tree                    17 / docs/12
+   Plugin System                 Daemon / plugin loader + manifests     20 / docs/15
+   MCP Integration               Daemon / OpenVideo MCP server          8.6 / docs/05
+   External Tool Manager         Daemon / tool manager + installer      10 / docs/06
+   Template System               Data / templates + plugins             20 / docs/15
+   Automation / Workflow Engine  Daemon / batch + triggers (roadmap)    26 / docs/20
+   Pipeline Scheduler            Daemon / scheduler                     14 / docs/08
+   Render Queue                  Daemon / queue + workers               14,22 / docs/08,16
+   Background Workers            Daemon / worker pool                    8.8,22 / docs/16
+   Cache Manager                 Daemon / content-addressed cache       14,22 / docs/08,16
+   Error Recovery / Crash Rec.   Daemon / journaling                    24,25 / docs/18,19
+   Validation Engine             Daemon / schema+lint; Validation agent 12,9 / docs/07,05
+   Testing Framework             Dev / test harness + golden frames     24 / docs/18
+   Telemetry                     Daemon / opt-in telemetry              25 / docs/19
+   Diagnostics                   Daemon / doctor + logs                 25 / docs/19
+   Performance Monitoring        Daemon / metrics                       22 / docs/16
+   Resource Scheduler            Daemon / GPU/CPU-aware scheduler       22 / docs/16
+   Security Model / Sandboxing   Cross-cutting                          23 / docs/17
+   Permission System             Daemon / permission mgr                23 / docs/17
+
+ 8.11  Technology stack (summary)
+ ------------------------------------------------------------------------------------------------
+   Shell/UI       : Electron, Next.js, React, TypeScript
+   Daemon         : Node 24, TypeScript, Express (or Fastify) + SSE, better-sqlite3 (project DB),
+                    simple-git (or libgit2 binding) for EDD versioning
+   Agent          : Claude CLI (headless, stream-json); models claude-opus-4-8 / -sonnet-4-6 /
+                    -haiku-4-5; MCP (stdio)
+   Media tools    : FFmpeg, FFprobe, Whisper / faster-whisper (bundled Python+torch toolchain),
+                    Remotion (headless Chrome), yt-dlp, ImageMagick
+   Packaging      : pnpm monorepo; electron-builder; winget/choco-assisted installs (Windows)
+   Render         : Remotion + FFmpeg; NVENC/CUDA when present, CPU fallback always
+   Deep dive: docs/04-system-architecture.md.
+
+================================================================================================
+ 9. AGENT ARCHITECTURE
+================================================================================================
+
+ 9.1  Philosophy
+ ------------------------------------------------------------------------------------------------
+ One monolithic prompt cannot reliably direct a multi-stage creative pipeline. OpenVideo uses a
+ director-plus-specialists model: a Director orchestrates a roster of narrow, expert subagents,
+ each with a single responsibility, its own tools, its own memory, and a defined failure policy.
+ This mirrors how Claude Code uses subagents (isolated context, parallelism, specialization) and
+ how a real production team is organized (a creative director coordinating editors, colorists,
+ sound, motion, and QA).
+
+ Design rules:
+   - Narrow remit per agent. An agent that does one thing can be evaluated, cached, and retried.
+   - Isolated context. Subagents get only the context they need (the relevant EDD slice, the
+     STYLE.md, their inputs), keeping token cost and confusion down.
+   - Cheap where possible. Mechanical subagents (e.g. probing, validation, simple extraction) run
+     on claude-haiku-4-5 or are pure deterministic tools; creative/judgment agents run on
+     claude-opus-4-8 (or -sonnet-4-6) with higher effort.
+   - Data in, data out. Agents communicate through the EDD and typed messages, not free prose.
+   - Bounded autonomy. Plan/auto mode and the permission system gate hard-to-reverse actions.
+
+ 9.2  How agents are realized on the Claude CLI
+ ------------------------------------------------------------------------------------------------
+   - The Director is the top-level CLI session. The daemon seeds it with the system prompt, the
+     project STYLE.md, the current EDD, and the available MCP tools.
+   - Specialized subagents are defined as Claude Code subagents (agent definition files) shipped
+     in the OpenVideo scaffold (under the project's agents/ and the app's bundled skills). The
+     Director delegates to them.
+   - Skills (SKILL.md) encode task playbooks (e.g. "premium reel caption styling", "HLG->SDR
+     grade recipe") that agents load on demand.
+   - Tools are the OpenVideo MCP server (Section 8.6). Anthropic/CLI tools (read/write/bash/etc.)
+     are available but high-risk actions are promoted to gated MCP tools.
+   - The orchestration loop is plan -> approve -> execute -> review -> refine (Section 11).
+   Deep dive: docs/05-agent-architecture.md, docs/11-prompt-and-intent-engine.md.
+
+ 9.3  Agent roster (overview)
+ ------------------------------------------------------------------------------------------------
+   Tier        Agent                  One-line remit                         Default model
+   ----------  ---------------------  -------------------------------------  ----------------
+   Orchestr.   Director               Own the goal; plan; delegate; accept   opus-4-8 (xhigh)
+   Planning    Planner                Turn intent+footage into a blueprint   opus-4-8 (high)
+   Planning    Research               Gather facts/refs (web/asset search)   sonnet-4-6
+   Analysis    Transcript             ASR + authoritative transcript         haiku/tool + opus
+   Analysis    Audio                  Loudness/denoise/EQ plan + verify      sonnet-4-6
+   Analysis    Color                  Tonemap+grade plan + verify            sonnet-4-6
+   Creative    Story/Retention/Hook   Narrative spine, pacing, hook rebuild  opus-4-8 (high)
+   Creative    Caption                Word-level captions, romanization,     opus-4-8 (high)
+                                      emphasis
+   Creative    Motion/Animation       Remotion components (graphics)         sonnet-4-6
+   Creative    B-roll                 Copyright-safe b-roll plan + assets    sonnet-4-6
+   Creative    Music/SFX              Royalty-safe bed + cues + ducking      sonnet-4-6
+   Publishing  Thumbnail/Title/Meta   Cover frame, titles, captions/hashtags sonnet-4-6
+   Quality     QA/Critique            Score output; demand revisions         opus-4-8 (high)
+   Quality     Simulation             Predict retention/legibility issues    sonnet-4-6
+   Quality     Validation             Schema/lint/contract checks            haiku/tool
+   Systems     Optimization/Perf      Compress, proxy, schedule, cost        sonnet-4-6
+   Systems     Export                 Final platform-optimized encode        haiku/tool + check
+   Systems     Installation           Prepare the machine (Section 10)       sonnet-4-6
+
+ 9.4  Per-agent specifications
+ ------------------------------------------------------------------------------------------------
+ Each agent is specified with the same template: Remit | Inputs | Outputs | Memory | Tools |
+ Permissions | Comms | Failure/Retry | Delegation | Context strategy | Reasoning/effort. Where a
+ field is obvious or shared, it is stated briefly. Full prose specs: docs/05-agent-architecture.md.
+
+ --- DIRECTOR AGENT ---
+   Remit: Own the user's goal end to end; produce/seek approval of the plan; delegate to
+     specialists; integrate results; decide when the result meets the bar; report.
+   Inputs: user intent, project STYLE.md, current EDD, control settings (model/effort/mode),
+     usage budget.
+   Outputs: an approved plan; a sequence of delegations; a final accepted EDD + render.
+   Memory: the session transcript; the project memory dir; the plan and its revisions.
+   Tools: all MCP tools (mostly via delegation); plan/approval tools; EDD read.
+   Permissions: high (can trigger renders and exports - gated by mode/permission prompts).
+   Comms: receives intent from daemon; emits delegations and status; requests user approval in
+     plan mode.
+   Failure/Retry: on subagent failure, retry with adjusted instructions or reassign; escalate to
+     the user if blocked; never loop unboundedly (effort/turn budget).
+   Delegation: chooses agents per stage; runs independent agents in parallel (e.g. Transcript +
+     Color + Audio analysis concurrently).
+   Context strategy: keeps a compact running state; passes only relevant slices to subagents;
+     relies on compaction for long sessions.
+   Reasoning/effort: opus-4-8 at xhigh for planning/integration; lower for routine coordination.
+
+ --- PLANNER AGENT ---
+   Remit: Convert intent + footage analysis into an explicit creative blueprint (the structured
+     precursor to the EDD): narrative spine, section-by-section timeline, hook plan, b-roll list,
+     motion-graphics list, caption style, audio plan, color plan, export target.
+   Inputs: intent, transcript, cut list, silence map, probe metadata, STYLE.md, look references.
+   Outputs: a blueprint document + an initial EDD skeleton (validated).
+   Memory: plan history (versioned).
+   Tools: probe, transcribe (read), detect_cuts/silence (read), edd_apply_patch (skeleton).
+   Permissions: medium (no render/export).
+   Failure/Retry: if inputs missing, request the relevant analysis agent first; re-plan on
+     critique feedback.
+   Delegation: requests analysis agents; hands the blueprint to creative agents.
+   Context strategy: loads only the transcript + metadata summaries, not raw media.
+   Reasoning/effort: opus-4-8 high.
+
+ --- RESEARCH AGENT ---
+   Remit: Gather external facts/refs when needed (e.g. verify a claim, find a style reference,
+     locate a royalty-free asset source) - copyright- and policy-safe only.
+   Inputs: a research question + constraints.
+   Outputs: cited findings / candidate asset references (never scraped copyrighted media).
+   Tools: web search/fetch (via CLI server tools or a permissioned proxy); asset-search plugins.
+   Permissions: network (gated; SSRF-guarded proxy).
+   Failure/Retry: degrade to "unable to verify"; never fabricate.
+   Reasoning/effort: sonnet-4-6.
+
+ --- TRANSCRIPT AGENT ---
+   Remit: Produce the authoritative transcript with reliable timings; handle code-switching;
+     decide model size/device with the user (tiered).
+   Inputs: audio, language hints, device/model policy.
+   Outputs: transcript (text) + segment timings + word timings (or distributed words); the
+     authoritative text that overrides ASR errors.
+   Memory: per-project transcript (versioned).
+   Tools: extract_audio, transcribe (Whisper/faster-whisper), align (optional WhisperX).
+   Permissions: local compute (may request GPU enablement via Installation Agent).
+   Failure/Retry: if small model is poor (PoC F4), escalate to a capable model; if CPU is too
+     slow, offer GPU setup.
+   Reasoning/effort: mostly tool-driven; opus-4-8 only for correction/romanization handoff.
+
+ --- AUDIO AGENT ---
+   Remit: Plan and verify the voice chain (HPF/denoise/de-ess/EQ/compress), loudness target,
+     limiter; plan music ducking and SFX placement; verify measured loudness.
+   Inputs: audio, target standard (default -14 LUFS), measured stats.
+   Outputs: an audio-processing spec in the EDD + verification (measured I/TP).
+   Tools: level_audio (two-pass loudnorm + afftdn), probe, ffmpeg_compose (audio).
+   Permissions: medium.
+   Failure/Retry: re-measure and re-apply if target missed; flag if source is unrecoverable.
+   Reasoning/effort: sonnet-4-6.
+
+ --- COLOR AGENT ---
+   Remit: Detect HDR/HLG vs SDR; plan tonemap + a tasteful grade (white balance, contrast, skin
+     protection, vibrance, light sharpen); avoid over-grading; verify with before/after frames.
+   Inputs: video, look/STYLE.md, probe color metadata.
+   Outputs: a color spec in the EDD + sample frames.
+   Tools: tonemap_grade (zscale/tonemap chain), probe, edd_render (sample frames).
+   Permissions: medium.
+   Failure/Retry: fall back to conservative grade if the look is ambiguous.
+   Reasoning/effort: sonnet-4-6.
+
+ --- STORY / RETENTION / HOOK AGENT ---
+   Remit: Define the narrative spine (promise->authority->tension->resolution->CTA); maximize
+     retention; rebuild the first 3 seconds; mark dead air, hesitations, repetition for cutting;
+     enforce "no static frame > 3-4s".
+   Inputs: transcript, cut list, silence map, intent, STYLE.md.
+   Outputs: pacing + smart-cut decisions + hook plan, encoded as EDD patches.
+   Tools: detect_silence/cuts (read), edd_apply_patch.
+   Permissions: medium.
+   Failure/Retry: respect "preserve natural speech"; if over-cutting risk, prefer fewer cuts.
+   Reasoning/effort: opus-4-8 high.
+
+ --- CAPTION AGENT ---
+   Remit: Produce word-level captions with karaoke timing, emphasis on key terms, and correct
+     romanization for code-switched speech (e.g. natural Hinglish, not mechanical transliteration
+     - PoC F5); keep captions off the eyeline; sync <= 80 ms.
+   Inputs: authoritative transcript + word/segment timings, STYLE.md caption style.
+   Outputs: a captions structure in the EDD (words, timings, emphasis, style) consumed by the
+     Motion agent / Remotion caption component.
+   Tools: transcribe (read), edd_apply_patch; Caption-style plugins.
+   Permissions: medium.
+   Failure/Retry: if timings are coarse, distribute words within segment; spot-check sync.
+   Reasoning/effort: opus-4-8 high (romanization + emphasis are judgment tasks).
+
+ --- MOTION / ANIMATION AGENT ---
+   Remit: Author the Remotion components for graphics, overlays, captions, lower-thirds, kinetic
+     headlines, comparison cards, flow diagrams, timelines, CTA - on brand, deterministic.
+   Inputs: EDD graphics/caption specs, STYLE.md tokens, brand assets.
+   Outputs: Remotion component props/compositions referenced by the EDD; preview frames.
+   Tools: remotion_render, edd_apply_patch; animation-pack plugins.
+   Permissions: medium.
+   Failure/Retry: if the native compositor fails, the render engine falls back to PNG-sequence +
+     FFmpeg automatically (ADR-0006); the agent need not handle it.
+   Reasoning/effort: sonnet-4-6.
+
+ --- B-ROLL AGENT ---
+   Remit: Propose and place copyright-safe b-roll that reinforces the spoken content (timing,
+     duration, transition, opacity, blend, motion); prefer generated vector/graphics or licensed
+     stills; never scrape copyrighted footage.
+   Inputs: transcript, narrative spine, STYLE.md.
+   Outputs: b-roll entries in the EDD + generated/sourced assets.
+   Tools: remotion_render (vector b-roll), fetch_media (only authorized/royalty-free), gen-image
+     plugins (optional, licensed).
+   Permissions: network (gated) for authorized sources only.
+   Failure/Retry: if no safe asset, fall back to on-brand vector graphics.
+   Reasoning/effort: sonnet-4-6.
+
+ --- MUSIC / SFX AGENT ---
+   Remit: Add a royalty-safe music bed (ducked under voice) and SFX cues (impacts, whooshes,
+     pops, stamps, chimes) on beats; never use copyrighted audio.
+   Inputs: EDD beats, intent, user-supplied or royalty-free libraries.
+   Outputs: music/SFX entries + mix spec (sidechain ducking) in the EDD.
+   Tools: ffmpeg_compose (mix/duck), asset/music-provider plugins.
+   Permissions: medium; network only for authorized providers.
+   Failure/Retry: if no licensed track, ship voice-forward and flag (PoC behavior).
+   Reasoning/effort: sonnet-4-6.
+
+ --- THUMBNAIL / TITLE / METADATA AGENT ---
+   Remit: Produce a cover frame/thumbnail, titles, on-screen title cards, and platform metadata
+     (caption text, hashtags, description) consistent with the content and STYLE.md.
+   Inputs: final EDD/render, transcript, intent, platform target.
+   Outputs: thumbnail asset; title/metadata structures.
+   Tools: remotion_render, edd_render (frame grab), edd_apply_patch.
+   Permissions: medium.
+   Reasoning/effort: sonnet-4-6.
+
+ --- QA / CRITIQUE AGENT ---
+   Remit: Independently score the output against the brief and a rubric (hook strength, pacing,
+     caption sync/legibility, grade realism, loudness, brand fidelity, platform compliance);
+     demand specific revisions; gate acceptance.
+   Inputs: rendered preview + frames, the EDD, the brief/rubric.
+   Outputs: a scored critique with concrete, actionable revision requests (or "accept").
+   Tools: edd_render (frames/clips), probe (loudness/format), vision (frame inspection).
+   Permissions: read + render.
+   Failure/Retry: iterate with the responsible creative agent until the bar is met or budget
+     is exhausted (then escalate to the user). Report-everything-then-filter discipline.
+   Reasoning/effort: opus-4-8 high (independent context from the creators - cross-checking).
+
+ --- SIMULATION AGENT ---
+   Remit: Predict likely audience problems before render (e.g. a static stretch, a buried hook,
+     an unreadable caption on small screens, an off-brand color) and feed them forward.
+   Inputs: the EDD + sampled frames.
+   Outputs: a risk list with suggested fixes.
+   Tools: edd_render (samples), vision.
+   Reasoning/effort: sonnet-4-6.
+
+ --- VALIDATION AGENT ---
+   Remit: Enforce contracts: EDD schema validity, asset references resolve, timings monotonic,
+     no edge-clipping, export spec sane. Mostly deterministic (the compiler's validation pass),
+     with an agent wrapper for explanation.
+   Inputs: EDD, asset manifest.
+   Outputs: pass/fail + precise diagnostics.
+   Tools: edd validate (deterministic), probe.
+   Reasoning/effort: haiku-4-5 / pure tool.
+
+ --- OPTIMIZATION / PERFORMANCE AGENT ---
+   Remit: Manage cost and speed: choose proxy vs full, pick GPU vs CPU paths, compress final to
+     platform norms, decide what to cache, and keep within the usage budget.
+   Inputs: hardware profile, render graph, usage budget, platform target.
+   Outputs: scheduling/quality decisions; compression settings.
+   Tools: scheduler hints, ffmpeg_compose (compress), cache controls.
+   Reasoning/effort: sonnet-4-6.
+
+ --- EXPORT AGENT ---
+   Remit: Produce the final platform-optimized deliverable (e.g. H.264 High, AAC 48k, +faststart,
+     1080x1920, 60fps for IG reels), verify it (ffprobe + loudness), and version it.
+   Inputs: accepted EDD, platform target.
+   Outputs: final file + verification report.
+   Tools: edd_render (final), ffmpeg_compose, probe.
+   Reasoning/effort: mostly tool; haiku-4-5 for the verification summary.
+
+ --- INSTALLATION AGENT ---
+   Remit: Prepare the machine (Section 10). Tiered: core auto; heavy on-demand. Detect hardware;
+     install, verify, repair, roll back; report progress.
+   Inputs: hardware profile, the capability a workflow needs.
+   Outputs: a ready toolchain + a capability report.
+   Tools: installer tools (winget/choco/pip/npm wrappers), HW detection, PATH repair.
+   Permissions: elevated (the one place the product installs software) - explicit, audited.
+   Reasoning/effort: sonnet-4-6.
+
+ 9.5  Inter-agent communication protocol
+ ------------------------------------------------------------------------------------------------
+   - The shared substrate is the EDD (validated patches) plus typed control messages routed by the
+     Director. Agents do not free-text at each other; they emit structured deltas and findings.
+   - The Director maintains the canonical task state; subagents return results to the Director,
+     which integrates and decides next steps (a hub-and-spoke model, with parallel fan-out for
+     independent analysis agents).
+   - All cross-agent artifacts (transcript, plan, EDD, critique) are written to the project
+     workspace so they are inspectable and versioned.
+
+ 9.6  Shared memory model
+ ------------------------------------------------------------------------------------------------
+   - Session memory: the CLI session transcript (compacted as needed).
+   - Project memory: a memory/ directory (per-project facts, style decisions, prior critiques) the
+     agents can read/write, surviving sessions.
+   - Artifact memory: the versioned EDD, transcript, plan, and renders (git history) are the
+     durable record of every decision.
+
+ 9.7  Failure handling, retries, escalation
+ ------------------------------------------------------------------------------------------------
+   - Deterministic tool failure: captured (stderr, exit code), classified, and either auto-retried
+     (transient), routed to a fallback (e.g. compositor -> PNG-sequence), or surfaced to the agent
+     with a precise diagnostic.
+   - Agent failure / low-quality output: the QA/Critique loop demands revision; bounded by an
+     effort/turn budget; on exhaustion, escalate to the user with the best result + the open issue.
+   - Hard blockers (missing capability): the Director invokes the Installation Agent or asks the
+     user. Never loops unboundedly.
+
+ 9.8  Context-window management
+ ------------------------------------------------------------------------------------------------
+   - Subagents receive only the relevant EDD slice, the STYLE.md, and their inputs - not the whole
+     project. Large artifacts (raw transcripts, frame dumps) are referenced by path/summary.
+   - Long sessions rely on compaction; stable context (system prompt, STYLE.md, tool list) is
+     ordered first for prompt caching (Section 22).
+
+ 9.9  Reasoning and effort strategy
+ ------------------------------------------------------------------------------------------------
+   - Creative/judgment agents (Director, Planner, Story/Retention, Caption, QA): opus-4-8 at
+     high/xhigh, adaptive thinking.
+   - Production agents (Audio, Color, Motion, B-roll, Music, Thumbnail, Optimization, Research,
+     Simulation, Installation): sonnet-4-6.
+   - Mechanical agents (Validation, Export verification, Transcript orchestration): haiku-4-5 or
+     pure tools.
+   - The user's control surface can globally bias model/effort (e.g. "fast" vs "max quality").
+   Deep dive: docs/05-agent-architecture.md.
+
+================================================================================================
+ 10. INSTALLATION ARCHITECTURE (THE INSTALLATION AGENT)
+================================================================================================
+
+ 10.1  Purpose and model
+ ------------------------------------------------------------------------------------------------
+ The Installation Agent gives a fresh machine its "superpowers" before any editing begins. It is
+ the single component permitted to install software, and it does so on a TIERED basis (ADR-0004):
+
+   - CORE tier (auto, silent, fast on first run): the small, universally-needed toolchain that
+     every workflow depends on - ffmpeg, ffprobe, yt-dlp, Node/pnpm (if not bundled), and the
+     Remotion runtime. These are quick to install and small.
+   - HEAVY tier (on first use, one-tap confirm): large or hardware-specific items that not every
+     user needs immediately - Whisper / faster-whisper plus a bundled Python+torch toolchain and
+     model weights (~1.5 GB+), CUDA/cuDNN builds for NVIDIA GPUs, optional model packs, large
+     fonts/codecs. The agent explains the download size and reason, then proceeds on approval.
+
+ This directly answers the proof-of-concept's biggest friction (F2, F3): no manual installs, no
+ multi-gigabyte surprises, and a known-good toolchain rather than a fragile system Python.
+
+ 10.2  Hardware and OS detection
+ ------------------------------------------------------------------------------------------------
+ On first run (and on demand), the agent profiles the machine:
+   - OS + version + architecture (Windows 10/11 x64 first; macOS arm64/x64 and Linux later).
+   - CPU (cores, features), RAM, free disk on the target volume.
+   - GPU: vendor/model and capability (NVIDIA + CUDA version + driver; later AMD/Intel; Apple
+     Metal on macOS). The PoC machine (RTX 3050, CUDA present) is the canonical Windows target.
+   - Existing tools on PATH and their versions (ffmpeg, node, python, git, etc.).
+   - Available package managers (winget, choco on Windows).
+ The profile is cached and drives every install decision (e.g. CUDA build only if a supported
+ NVIDIA GPU + driver is present; CPU torch otherwise).
+
+ 10.3  Dependency catalog
+ ------------------------------------------------------------------------------------------------
+   Tier   Dependency            Windows install            Purpose
+   -----  --------------------  -------------------------   --------------------------------------
+   core   FFmpeg + FFprobe      winget (Gyan build)         the render/inspection workhorse
+   core   yt-dlp                winget                      authorized media import
+   core   Node + pnpm           bundled / winget            Remotion + tooling runtime
+   core   Remotion runtime      pnpm (project-local)        graphics/captions engine
+   heavy  Python (pinned)       bundled toolchain           host for Whisper/torch (avoid system
+                                                            Python pitfalls; PoC F3)
+   heavy  Whisper/faster-whisper pip (pinned)               ASR + timestamps
+   heavy  torch (CPU or CUDA)   pip (device-aware)          ASR compute; CUDA build iff supported
+   heavy  Whisper model weights download (cached)           ASR models (size-tiered)
+   heavy  ImageMagick           winget (optional)           image ops for some plugins
+   heavy  CUDA/cuDNN runtime    vendor/bundled (if NVIDIA)  GPU acceleration for ASR/encode
+   opt    Fonts / codec packs   bundled/winget              caption typefaces; extra codecs
+
+ The catalog is data-driven (a manifest), so plugins can declare additional dependencies the
+ agent provisions on the same tiered, verified basis.
+
+ 10.4  Install lifecycle (per dependency)
+ ------------------------------------------------------------------------------------------------
+   detect  -> is it present and the right version? (probe PATH + version string)
+   plan    -> choose method (winget/choco/pip/pnpm/bundled) and exact pinned version for the
+              detected OS/arch/GPU; compute download size; (heavy) request confirm
+   install -> run the installer with captured output and a timeout; stream progress
+   configure -> fix PATH (user scope), set env (e.g. PYTHONUTF8=1 to avoid Windows cp1252 console
+              errors - PoC), wire project-local paths
+   verify  -> run a known-good smoke test (e.g. `ffmpeg -version`, a 1-frame transcode, a tiny
+              transcription); confirm the capability actually works, not just that a binary exists
+   repair  -> on a broken/partial install (e.g. a corrupted binary, a merged/duplicated runtime -
+              the PoC saw a doubled ffmpeg in the Remotion compositor), reinstall cleanly
+   rollback -> on failure, restore the prior state (uninstall the partial, revert PATH/env) so the
+              machine is never left half-broken
+   report  -> a capability report to the cockpit (what's ready, what's pending, sizes, versions)
+
+ Idempotency is mandatory: re-running install is safe and a no-op when everything is healthy.
+
+ 10.5  Windows-first specifics
+ ------------------------------------------------------------------------------------------------
+   - Prefer winget; fall back to choco; bundle where a manager is unreliable.
+   - PATH edits are user-scoped and applied so new terminals/sessions see them; the daemon also
+     resolves tool paths directly (not relying solely on inherited PATH).
+   - Set PYTHONUTF8=1 to avoid the legacy cp1252 console crash on multilingual output (PoC).
+   - Bundle a pinned Python + torch rather than relying on the system Python (the PoC's Python
+     3.14 lacked CUDA torch wheels; a bundled, known-good toolchain removes that class of failure).
+   - Detect and avoid the Remotion native-compositor failure mode by health-checking it and
+     defaulting to the PNG-sequence + FFmpeg render path when it is unhealthy (ADR-0006, Section 15).
+
+ 10.6  GPU / CUDA strategy
+ ------------------------------------------------------------------------------------------------
+   - If a supported NVIDIA GPU + driver is detected, the heavy tier installs the CUDA torch build
+     and (if needed) CUDA/cuDNN runtime, enabling 30-50x faster ASR and NVENC-accelerated encode.
+   - Otherwise CPU torch + libx264 are used (always-works fallback), with the agent clearly noting
+     the speed trade-off and offering GPU enablement when hardware allows.
+   - The choice is explicit and user-aware (PoC lesson): never silently saddle the user with a
+     40-minute CPU transcription when a one-time GPU setup would make it a minute.
+
+ 10.7  Progress reporting and UX
+ ------------------------------------------------------------------------------------------------
+   - Every step streams structured progress to the cockpit (phase, percent, ETA, current action),
+     rendered in the "alive" terminal and an install panel.
+   - Heavy-tier downloads show size and reason and require one tap to proceed.
+   - Failures surface a precise, actionable diagnostic and the rollback result.
+   - A "doctor" command re-profiles and self-heals (Section 25).
+
+ 10.8  Upgrades and pinning
+ ------------------------------------------------------------------------------------------------
+   - All versions are pinned per release for reproducibility; upgrades are deliberate and verified.
+   - The agent can detect outdated tools and offer upgrades with rollback safety.
+   Deep dive: docs/06-installation-agent.md.
+
+================================================================================================
+ 11. VIDEO PIPELINE (INTENT TO RENDER, END TO END)
+================================================================================================
+
+ 11.1  The canonical pipeline
+ ------------------------------------------------------------------------------------------------
+ Every video workflow flows through the same stages. Stages are agent- or tool-driven, and each
+ produces inspectable, versioned artifacts.
+
+   (0) ENSURE       capabilities present (Installation Agent; tiered)
+   (1) INGEST       import/probe media; create/locate the project; register assets (hashed)
+   (2) ANALYZE      transcript (ASR), cut detection, silence/hesitation, loudness stats, color
+                    metadata, scene/energy analysis  [agents: Transcript, Audio, Color; tools]
+   (3) PLAN         creative blueprint: spine, hook, pacing, captions, b-roll, graphics, audio,
+                    color, export target  [agent: Planner/Director; plan mode -> user approval]
+   (4) ASSEMBLE     build/patch the EDD (Video AST) from the blueprint  [creative agents]
+   (5) COMPILE      EDD -> IR -> execution DAG (validate, lint, optimize, schedule)  [compiler]
+   (6) RENDER       execute the DAG: smart-cut, grade, audio mix, Remotion graphics/captions,
+                    FFmpeg composite; preview-quality first, final later  [scheduler + engine]
+   (7) REVIEW       QA/Critique + Simulation score the result; request revisions (loop to 4-6)
+   (8) EXPORT       final platform-optimized encode + verification (ffprobe + loudness)  [Export]
+   (9) VERSION      commit the EDD + render; record provenance  [daemon/git]
+
+ 11.2  Stage detail
+ ------------------------------------------------------------------------------------------------
+   INGEST: probe() yields duration, resolution, fps, codecs, color metadata (e.g. HLG/HDR),
+     audio layout. Assets are copied/linked into the project and content-hashed for caching.
+   ANALYZE: runs analysis agents in parallel where independent (Transcript || Color || Audio).
+     Produces transcript+timings, cut list, silence map, loudness stats, color profile.
+   PLAN: the Planner composes the blueprint; in plan mode the cockpit shows it for approval/edit
+     (the user can say "make the hook punchier", "fewer graphics", "keep it under 30s").
+   ASSEMBLE: creative agents translate the approved blueprint into EDD patches (tracks, clips,
+     transitions, effects, captions, graphics, audio, color, export spec). Each patch is validated
+     and committed.
+   COMPILE + RENDER + REVIEW + EXPORT: Sections 12, 14, 15, 9 (QA), 9 (Export).
+
+ 11.3  The proven reel pipeline mapped to stages (worked example)
+ ------------------------------------------------------------------------------------------------
+   Intent: "Turn this into a premium Instagram Reel."
+     INGEST   : probe iPhone 1080x1920 60fps HLG clip.
+     ANALYZE  : transcribe (Hindi/English); detect ~20 cuts; silence map (lead-in trim);
+                measure loudness (-21 LUFS); detect HLG color.
+     PLAN     : spine = promise->authority->tension->resolution->CTA; hook rebuild; word-level
+                Hinglish captions w/ emphasis; b-roll/graphics list; audio to -14 LUFS; HLG->SDR
+                grade; export 1080x1920 H.264/AAC.  [shown for approval]
+     ASSEMBLE : EDD with a-roll (graded), alternating breathe punch-ins on cuts, caption track,
+                graphics sequences (hook, checklist, VOID/VOIDABLE, flow, timeline, CTA), audio
+                mix, export spec.
+     COMPILE  : validate timings/refs; optimize (proxy for preview); schedule.
+     RENDER   : smart-cut + grade (FFmpeg); captions/graphics (Remotion -> PNG seq if compositor
+                unhealthy); composite + mux (FFmpeg).
+     REVIEW   : QA checks hook in <1.5s, caption sync <=80ms, loudness ~-14 LUFS, legibility.
+     EXPORT   : H.264 High, AAC 48k, +faststart, 1080x1920 60fps; verify; version.
+   This is exactly the PoC's flow, now reproducible and conversational.
+
+ 11.4  Preview vs final
+ ------------------------------------------------------------------------------------------------
+   - Preview: low-cost, fast (proxy resolution, draft encode, fewer frames) for the cockpit's
+     sandboxed preview and the QA loop.
+   - Final: full-quality, platform-optimized, verified. Driven by the same EDD; only quality
+     parameters differ. (Section 15.)
+
+ 11.5  Determinism and reproducibility
+ ------------------------------------------------------------------------------------------------
+   Given the same EDD + assets + tool versions, the render is reproducible (encoder
+   non-determinism pinned where feasible). The EDD + tool versions are recorded with each render,
+   so any output can be regenerated or audited.
+   Deep dive: docs/07-video-engine-and-compiler.md, docs/09-rendering-engine.md.
+
+================================================================================================
+ 12. COMPILER DESIGN (INTENT -> PLAN -> EDD -> IR -> EXECUTION DAG)
+================================================================================================
+
+ 12.1  Editing as compilation
+ ------------------------------------------------------------------------------------------------
+ OpenVideo treats an edit as a program to be compiled. This is the conceptual heart of the system
+ and the reason edits are explainable, reproducible, incremental, and cacheable. The stages mirror
+ a classic compiler (and the tree-sitter / AST / IR / codegen lineage from Section 6.5):
+
+   Front end:  natural-language intent -> (Intent Engine) -> structured intent
+               structured intent + footage analysis -> (Planner) -> creative blueprint
+   Middle:     blueprint -> (assembly) -> EDD (Video AST)  [the AST]
+               EDD -> (lowering) -> IR  [typed, normalized, resolution-independent]
+               IR -> (passes) -> validated, optimized, scheduled IR
+   Back end:   IR -> (codegen) -> execution DAG of concrete tool invocations
+               DAG -> (scheduler/executor) -> rendered media  [Section 14, 15]
+
+ 12.2  Front end - intent and planning
+ ------------------------------------------------------------------------------------------------
+   - The Intent Engine (Section 16) classifies the user's request into an intent type + parameters
+     (e.g. {goal: make_reel, platform: instagram, style_ref: hormozi, constraints: {<=30s}}),
+     resolving pronouns/context against the current project and EDD.
+   - The Planner consumes structured intent + analysis artifacts and emits a creative blueprint -
+     a human-readable, approvable plan that is also structured enough to drive assembly.
+
+ 12.3  The EDD (Video AST)
+ ------------------------------------------------------------------------------------------------
+ The Edit Decision Document is the AST: a typed, JSON, version-controlled tree describing the edit
+ declaratively and at a high level (intent-bearing), independent of concrete tool commands.
+   Top-level shape (schema in Section 13, Appendix D):
+     project meta (id, dimensions, fps, color space, platform target, STYLE ref)
+     sources[]      (assets with hashes, probe metadata)
+     timeline       (tracks[]: video/a-roll, b-roll, captions, graphics, audio, music, sfx)
+       clip[]       (source ref, in/out, transforms: crop/scale/position/speed, punch-in curve)
+       transition[] (type, duration, easing)
+       effect[]     (color grade spec, denoise, sharpen, vignette - parameterized)
+     captions       (words[], timings, emphasis, style ref)
+     graphics[]     (Remotion component refs + props + time ranges)
+     audio          (voice chain, loudness target, music bed + ducking, sfx cues)
+     export         (codec, container, resolution, fps, bitrate, faststart, platform preset)
+     provenance     (which agent authored which node, with rationale)
+   The EDD is the contract between reasoning (agents author it) and execution (the compiler
+   consumes it). It is diffable; an "edit" is a validated patch + a git commit.
+
+ 12.4  Lowering to IR
+ ------------------------------------------------------------------------------------------------
+   The EDD is intent-level and partly abstract (e.g. "alternating 3% breathe punch-ins on cuts",
+   "captions in the brand style"). Lowering normalizes it into a concrete, typed IR:
+     - resolve style refs/tokens to concrete values (fonts, colors, sizes from STYLE.md);
+     - expand high-level directives into explicit per-clip transforms and keyframes (e.g. compute
+       the zoom curve per segment);
+     - resolve asset paths + proxies; normalize time bases to the project fps;
+     - flatten transitions/effects into ordered, parameterized operations.
+   The IR is resolution-independent where possible (so preview and final share it) and is the unit
+   that the passes operate on.
+
+ 12.5  Compiler passes
+ ------------------------------------------------------------------------------------------------
+   - Validation pass: schema validity, monotonic timings, resolvable asset refs, in/out within
+     bounds, no caption edge-clipping, sane export spec. Emits precise diagnostics (Validation
+     agent wraps this for explanation). A failed validation blocks render.
+   - Lint pass: best-practice warnings (e.g. "static frame > 3-4s", "caption over eyeline",
+     "loudness target missing", "graphic on screen > 2.5s hides the speaker") - surfaced to
+     Simulation/QA and the user, not necessarily fatal.
+   - Optimization pass: deduplicate identical operations, hoist shared sub-renders, choose
+     proxy vs full per target, pick GPU vs CPU paths, and select cacheable boundaries.
+   - Scheduling pass: topologically order the operations into the execution DAG, grouping by
+     resource (GPU/CPU) and parallelizable independent branches (Section 14).
+
+ 12.6  Code generation - the execution DAG
+ ------------------------------------------------------------------------------------------------
+   Codegen lowers the optimized IR into a directed acyclic graph of concrete, content-addressed
+   tool invocations (the "object code"):
+     nodes  = a typed tool call (ffmpeg filtergraph, remotion render, loudnorm pass, composite)
+              with fully-resolved inputs and a deterministic cache key (hash of op + inputs + params)
+     edges  = data dependencies (a node consumes another node's output)
+   The DAG is the executable artifact the scheduler runs (Section 14). Because nodes are
+   content-addressed, unchanged nodes are served from cache.
+
+ 12.7  Incremental compilation and caching
+ ------------------------------------------------------------------------------------------------
+   - A change to the EDD recompiles only the affected subtree; nodes whose cache key is unchanged
+     are reused. Changing one caption style re-renders only the caption track, not the a-roll
+     (Goal T3, success criterion).
+   - The cache is content-addressed (Section 14): same op + same inputs + same params -> same key
+     -> reuse. Asset hashing (Section 17) underpins this.
+
+ 12.8  Diagnostics and error model
+ ------------------------------------------------------------------------------------------------
+   - Every pass emits structured diagnostics with a code, severity, the offending EDD node (with a
+     path), a human explanation, and (where possible) a suggested fix - rendered in the cockpit and
+     consumable by agents. Tool failures are captured and classified (transient/fallback/fatal).
+
+ 12.9  Why this design
+ ------------------------------------------------------------------------------------------------
+   - It cleanly separates "what the user wants" (EDD) from "how to make it" (IR/DAG), so the same
+     intent can target preview or final, CPU or GPU, native or fallback render, without re-asking
+     the model.
+   - It makes edits inspectable and reversible (the AST is data, in git).
+   - It makes rendering fast and cheap (incremental, cached).
+   - It is the well-trodden compiler architecture, applied to video - reducing novelty risk.
+   Deep dive: docs/07-video-engine-and-compiler.md, docs/08-execution-and-render-graph.md.
+
+================================================================================================
+ 13. DATA MODELS AND SCHEMAS
+================================================================================================
+
+ 13.1  The model set
+ ------------------------------------------------------------------------------------------------
+ OpenVideo's durable state is a small set of typed, versioned, JSON-or-markdown documents living
+ in the project workspace (Section 17). All are inspectable and git-versioned. Full JSON Schemas
+ are in Appendix D and docs/10-data-models.md; this section gives the authoritative shapes.
+
+   Model            File (per project)              Role
+   ---------------  ------------------------------   --------------------------------------------
+   Project manifest project.json                     identity, dimensions, platform, refs
+   EDD (Video AST)  timelines/<id>.edd.json          the edit, declaratively (the AST)
+   Transcript       transcripts/<asset>.json         ASR text + segment/word timings
+   Blueprint/Plan   plans/<id>.plan.json             approved creative blueprint
+   STYLE (look)     STYLE.md                         brand/look system (open-design analog)
+   Asset manifest   assets/manifest.json             assets + content hashes + probe metadata
+   Cache index      cache/index.json                 content-addressed render-node cache
+   Memory           memory/*.md                       agent/project memory facts
+   Render record    renders/<id>.json                provenance: EDD ver, tool vers, outputs
+
+ 13.2  EDD (Video AST) schema - authoritative shape
+ ------------------------------------------------------------------------------------------------
+   {
+     "schemaVersion": "1.0",
+     "id": "edd_<uuid>",
+     "project": {
+       "id": "prj_<uuid>", "width": 1080, "height": 1920, "fps": 60,
+       "colorSpace": "bt709", "platform": "instagram_reel", "styleRef": "STYLE.md@<gitsha>"
+     },
+     "sources": [
+       { "id": "src_1", "path": "assets/IMG_1554.mp4", "hash": "sha256:...",
+         "probe": { "durationS": 66.2, "w": 1080, "h": 1920, "fps": 60,
+                    "vcodec": "h264", "acodec": "aac", "color": "hlg/bt2020" } }
+     ],
+     "timeline": {
+       "durationS": 64.7,
+       "tracks": [
+         { "id": "aroll", "kind": "video", "clips": [
+             { "id": "c1", "src": "src_1", "inS": 0.5, "outS": 6.2,
+               "transform": { "scale": 1.0, "punchIn": { "from": 1.0, "to": 1.03, "ease": "io" } } },
+             { "id": "c2", "src": "src_1", "inS": 6.2, "outS": 13.1,
+               "transform": { "punchIn": { "from": 1.03, "to": 1.0, "ease": "io" } } }
+           ],
+           "transitions": [ { "between": ["c1","c2"], "type": "cut" } ],
+           "effects": [
+             { "type": "color", "spec": { "tonemap": "hlg_to_bt709", "wb": "neutralize",
+                "contrast": "s_curve_light", "vibrance": 0.1, "sharpen": 0.6, "protectSkin": true } }
+           ]
+         },
+         { "id": "captions", "kind": "captions", "styleRef": "style.caption.premium",
+           "words": [
+             { "t": "SALE", "startS": 0.62, "endS": 0.80, "emph": true },
+             { "t": "DEED", "startS": 0.80, "endS": 1.02, "emph": true },
+             { "t": "ko",   "startS": 1.02, "endS": 1.14, "emph": false }
+           ] },
+         { "id": "graphics", "kind": "graphics", "items": [
+             { "id": "g_hook", "component": "Hook", "props": {...}, "startS": 0.0, "endS": 2.7 },
+             { "id": "g_void", "component": "VoidVoidable", "props": {...}, "startS": 27.5, "endS": 35.5 }
+           ] },
+         { "id": "audio", "kind": "audio",
+           "voice": { "chain": ["highpass=80","afftdn:nr=12","deesser","eq_presence"],
+                      "loudness": { "targetLUFS": -14, "tpDb": -1.5 } },
+           "music": { "src": null, "targetLUFS": -24, "duck": "sidechain" },
+           "sfx": [ { "cue": "impact", "atS": 0.0 }, { "cue": "whoosh", "atS": 6.2 } ] }
+       ]
+     },
+     "export": { "container": "mp4", "vcodec": "h264_high", "acodec": "aac",
+                 "w": 1080, "h": 1920, "fps": 60, "crf": 18, "faststart": true,
+                 "preset": "instagram_reel" },
+     "provenance": [
+       { "node": "timeline.tracks.aroll.effects[0]", "by": "ColorAgent",
+         "why": "iPhone HLG washed out; tonemap+light grade for phone-consistent SDR" },
+       { "node": "timeline.tracks.captions", "by": "CaptionAgent",
+         "why": "word-level Hinglish karaoke; emphasis on legal terms" }
+     ]
+   }
+
+   Notes: punchIn, color spec, and caption style are intent-level; lowering (Section 12.4) resolves
+   them to concrete keyframes/values via STYLE.md. Every node can carry provenance.
+
+ 13.3  Project manifest (project.json)
+ ------------------------------------------------------------------------------------------------
+   { "id": "prj_<uuid>", "name": "...", "createdAt": "...", "platform": "instagram_reel",
+     "width": 1080, "height": 1920, "fps": 60, "styleRef": "STYLE.md",
+     "currentEdd": "timelines/main.edd.json", "assets": "assets/manifest.json" }
+
+ 13.4  Transcript model
+ ------------------------------------------------------------------------------------------------
+   { "asset": "src_1", "language": "hi+en", "model": "whisper-large-v3", "device": "cuda",
+     "authoritative": true,
+     "segments": [ { "startS": 0.0, "endS": 6.2, "text": "...", "words": [
+        { "t": "...", "startS": 0.0, "endS": 0.2, "conf": 0.97 } ] } ] }
+   The authoritative transcript may override raw ASR text (PoC F4); romanization is applied by the
+   Caption agent while preserving timings (PoC F5).
+
+ 13.5  Blueprint / plan model (plans/<id>.plan.json)
+ ------------------------------------------------------------------------------------------------
+   A structured, approvable creative plan: { spine, sections[] (timestamp, line, camera, zoom,
+   transition, overlays, captions, sfx, broll, color), hookPlan, brollList, graphicsList,
+   captionStyle, audioPlan, colorPlan, exportTarget }. It is the human-readable precursor that the
+   assembly step turns into EDD patches; both are versioned.
+
+ 13.6  STYLE (look/brand) system - the open-design analog
+ ------------------------------------------------------------------------------------------------
+   STYLE.md is OpenVideo's equivalent of open-design's DESIGN.md: a per-project (or shared) file
+   that constrains every output. Sections: identity/voice; color palette + accent; typography
+   (display + body faces); caption style (size, weight, highlight, emphasis treatment, safe
+   margins); motion language (eases, durations, punch-in amplitude); pacing defaults; audio
+   targets (LUFS); grade defaults; b-roll policy; anti-patterns ("no teal-orange", "captions off
+   eyeline"). It can be authored by the user, derived from a reference ("make it feel like
+   MagnatesMedia"), or shipped as a plugin. Lowering resolves EDD style refs against it.
+   (Full schema: docs/14-style-and-design-system.md.)
+
+ 13.7  Asset manifest + cache index
+ ------------------------------------------------------------------------------------------------
+   manifest.json: [ { "id":"src_1","path":"...","hash":"sha256:...","probe":{...},
+                      "proxies":{ "preview":"cache/proxy/src_1_540.mp4" } } ]
+   cache/index.json: { "<cacheKey>": { "node":"...", "output":"cache/blobs/<hash>.<ext>",
+                       "createdAt":"...", "toolVersions":{...} } }
+   cacheKey = hash(operation + resolved-inputs + params + toolVersions). (Section 14.4.)
+
+ 13.8  Versioning
+ ------------------------------------------------------------------------------------------------
+   - Every model carries a schemaVersion; migrations are explicit.
+   - The EDD, transcript, plan, and STYLE are git-committed on each applied change; an "edit" is a
+     commit, enabling diff, blame, rollback, and reproducibility.
+   Deep dive: docs/10-data-models.md, Appendix D.
+
+================================================================================================
+ 14. EXECUTION GRAPH, SCHEDULING, AND CACHING
+================================================================================================
+
+ 14.1  The execution DAG (recap + detail)
+ ------------------------------------------------------------------------------------------------
+   Codegen (Section 12.6) produces a DAG of content-addressed tool-invocation nodes. Example node:
+     { "id":"n_grade", "op":"tonemap_grade",
+       "inputs":["src_1"], "params":{ "tonemap":"hlg_to_bt709", ... },
+       "key":"sha256:<op+inputs+params+toolvers>", "resource":"gpu|cpu",
+       "outputs":["cache/blobs/<hash>.mp4"] }
+   Edges encode data dependencies (composite depends on grade + captions + audio). The DAG is the
+   single source of truth for what must run and in what order.
+
+ 14.2  Scheduler
+ ------------------------------------------------------------------------------------------------
+   - Topologically orders nodes; runs independent branches in parallel (e.g. grade a-roll while
+     rendering caption PNGs while leveling audio).
+   - Resource-aware: separates GPU-bound (NVENC/CUDA), CPU-bound (libx264, filtergraphs), and
+     Chrome-bound (Remotion) work; sizes pools to the detected hardware (Section 22).
+   - Honors a usage/cost budget and preview-vs-final quality (Optimization agent input).
+
+ 14.3  Render queue and background workers
+ ------------------------------------------------------------------------------------------------
+   - Jobs are subgraphs submitted to a bounded worker pool; progress (phase, %, ETA) streams to
+     the cockpit; jobs are cancellable; the queue applies backpressure to avoid thrashing.
+   - Long jobs run in the background and notify on completion (PoC F9: users want "alive" status).
+
+ 14.4  Content-addressed cache
+ ------------------------------------------------------------------------------------------------
+   - Each node's output is stored under its cacheKey. Re-running with an unchanged key returns the
+     cached blob instantly. Asset hashing + resolved params + pinned tool versions make keys exact.
+   - Cache is per-project (with an optional shared global cache for common operations); eviction is
+     LRU within a size budget; integrity is verified on read.
+
+ 14.5  Incremental rendering
+ ------------------------------------------------------------------------------------------------
+   - Changing the EDD recompiles only the affected subtree; unchanged nodes hit the cache. Changing
+     a caption color re-renders the caption track and the final composite only - not the grade or
+     audio. This delivers the "small change = fast re-render" success criterion (Goal T3).
+
+ 14.6  Proxy generation
+ ------------------------------------------------------------------------------------------------
+   - On ingest (or lazily), the engine generates low-res proxies for fast preview and QA; final
+     render uses full-res sources. The IR is resolution-independent so the same graph drives both.
+
+ 14.7  Cancellation, progress, ETA, journaling
+ ------------------------------------------------------------------------------------------------
+   - Nodes are killable; partial outputs are discarded (never half-written into cache).
+   - The scheduler journals node state (queued/running/done/failed) so a crash mid-render resumes
+     from the last completed nodes rather than restarting (Section 24, 25).
+
+ 14.8  Failure and fallback in execution
+ ------------------------------------------------------------------------------------------------
+   - A node failure is classified: transient (retry with backoff), fallback-eligible (e.g. native
+     Remotion compositor -> PNG-sequence + FFmpeg; GPU encode -> CPU encode), or fatal (surface a
+     precise diagnostic and stop the affected branch).
+   Deep dive: docs/08-execution-and-render-graph.md.
+
+================================================================================================
+ 15. RENDERING ENGINE
+================================================================================================
+
+ 15.1  Two substrates, one composite model
+ ------------------------------------------------------------------------------------------------
+ The render engine combines two deterministic substrates:
+   - FFmpeg/FFprobe: the media workhorse - decode, cut/trim, crop/scale/position, speed, concat,
+     overlay, color (zscale/tonemap, curves, colorbalance), denoise (afftdn), loudness (two-pass
+     loudnorm), limiter, encode (libx264/NVENC), mux, faststart, inspection.
+   - Remotion (headless Chrome): declarative React components for captions, lower-thirds, kinetic
+     headlines, comparison cards, flow diagrams, timelines, CTAs, and vector b-roll - deterministic
+     frames driven by EDD-resolved props.
+ The composite model: render graphics/captions as a transparent layer (PNG sequence or MP4 with
+ alpha), then composite over the graded, cut a-roll with FFmpeg, then mux the final audio mix. This
+ is exactly the path the proof-of-concept shipped.
+
+ 15.2  Native vs PNG-sequence render path (ADR-0006)
+ ------------------------------------------------------------------------------------------------
+ The PoC proved that Remotion's native compositor binary can fail on a given Windows machine. The
+ engine therefore supports BOTH and selects automatically:
+   - HEALTH CHECK at install/first-use: probe the Remotion compositor binary (the PoC's failure
+     was the bundled Rust/ffprobe binary crashing on any input). If healthy, use the native render.
+   - FALLBACK: render the graphics/captions as a transparent PNG sequence via headless Chrome
+     (which works even when the compositor binary does not), then composite with the system FFmpeg.
+   - The selection is cached in the hardware/capability profile and can be forced via settings.
+ This makes the render engine robust to the single most disruptive failure the PoC encountered.
+
+ 15.3  FFmpeg responsibilities (typed, not raw shell)
+ ------------------------------------------------------------------------------------------------
+   - Cutting/assembly: trim, concat, segment; smart-cut from the EDD's clip in/out points.
+   - Spatial: crop, scale, position, the alternating "breathe" punch-in (computed zoom curve).
+   - Color: HLG/HDR -> Rec.709 SDR tonemap (zscale=t=linear,npl=...,tonemap=hable,...), white
+     balance, S-curve contrast, vibrance/saturation, light unsharp, optional vignette; preserve or
+     set correct color tags. (PoC F7.)
+   - Audio: high-pass, afftdn denoise, de-ess, presence EQ, compression, two-pass loudnorm to a
+     target (default -14 LUFS), alimiter; music sidechain ducking; SFX placement. (PoC F8.)
+   - Encode/mux: libx264 (CRF/preset) or NVENC; AAC; +faststart; platform-correct pix_fmt/profile.
+   All FFmpeg use is via typed tool specs (Section 8.6) that construct validated filtergraphs;
+   agents never receive a raw FFmpeg shell.
+
+ 15.4  Remotion responsibilities
+ ------------------------------------------------------------------------------------------------
+   - A bundled Remotion project (project-local) with brand-aware components driven by STYLE.md
+     tokens: Captions (word-level karaoke + emphasis), Hook, LowerThird, Checklist, comparison
+     cards, FlowDiagram, Timeline, CTA, BrandBug, and vector b-roll.
+   - The Motion agent authors component props in the EDD; the engine renders them deterministically.
+   - Fonts are loaded via the bundled font set; emphasis/animation use the motion language tokens.
+
+ 15.5  GPU acceleration and CPU fallback
+ ------------------------------------------------------------------------------------------------
+   - Encode: NVENC (h264_nvenc/hevc_nvenc) when an NVIDIA GPU is present; libx264 otherwise.
+   - ASR: CUDA torch when supported (30-50x faster - PoC F3); CPU torch fallback.
+   - Decode/scale: hardware decode where available; CPU otherwise.
+   - The scheduler routes GPU-eligible nodes to the GPU pool; everything has a CPU path so the
+     product always works (T4).
+
+ 15.6  Color, codecs, compression, HDR/SDR
+ ------------------------------------------------------------------------------------------------
+   - Default deliverable: Rec.709 SDR (tonemapped from HLG/HDR sources) for phone-consistent color.
+   - HDR passthrough/export is a roadmap option for platforms that support it.
+   - Codecs: H.264 (default, max compatibility), HEVC (optional), with platform presets (IG/TikTok/
+     Shorts) controlling resolution, fps, bitrate/CRF, profile, faststart.
+   - Compression: the Optimization agent targets platform size/bitrate norms without visible loss.
+
+ 15.7  Preview vs final
+ ------------------------------------------------------------------------------------------------
+   - Preview: proxy resolution, fast preset, possibly partial range, for the sandboxed preview and
+     QA loop; cached aggressively.
+   - Final: full resolution, high quality (e.g. CRF 18, slow preset), verified (ffprobe + loudness).
+
+ 15.8  Sync, caption timing, motion interpolation
+ ------------------------------------------------------------------------------------------------
+   - Frame-accurate sync between a-roll, captions, graphics, and audio is enforced by the IR's
+     normalized time base; caption word timing is honored to <= 80 ms; head-trims are applied
+     consistently to video and audio (the PoC's 0.5s lead-in trim is a worked example).
+   - Motion (punch-ins, graphic entrances) uses eased interpolation from the motion language;
+     optional frame interpolation is a roadmap item.
+
+ 15.9  Output targets
+ ------------------------------------------------------------------------------------------------
+   - Platform presets encode the known-good settings (e.g. IG Reel: 1080x1920, 60fps, H.264 High,
+     AAC 48k, +faststart, ~-14 LUFS). New presets ship as data/plugins.
+   Deep dive: docs/09-rendering-engine.md, Appendix B (ffmpeg recipes from the PoC).
+
+================================================================================================
+ 16. PROMPT AND INTENT ENGINE
+================================================================================================
+
+ 16.1  Intent taxonomy
+ ------------------------------------------------------------------------------------------------
+ The Intent Engine classifies a user utterance into a typed intent + parameters. Top-level intent
+ families:
+   create   (make a reel/short/clip; from footage + goal + platform)
+   transform(re-grade, re-level, recompose, change pacing, change aspect)
+   analyze  (find dead frames, list cuts, measure loudness, transcribe)
+   captions (add/edit captions; style; language/romanization; emphasis)
+   broll    (generate/place b-roll)
+   audio    (level, denoise, music, sfx, swap audio)
+   hook     (rebuild the opening; first-3-seconds)
+   export   (platform-optimized deliverable)
+   style    (apply/derive a look system; "make it feel like X")
+   project  (manage assets, versions, settings)
+   system   (install/prepare; doctor; configure)
+ Each intent has a parameter schema and maps to a Director playbook (which agents, in what order).
+
+ 16.2  Intent parsing and resolution
+ ------------------------------------------------------------------------------------------------
+   - Resolve context: "this clip" -> the dropped/active asset; "the hook" -> the opening of the
+     current EDD; "make it shorter" -> a constraint on the current timeline.
+   - Extract parameters (platform, style reference, duration constraints, language).
+   - Ambiguity handling: when intent is genuinely ambiguous and the choice materially changes the
+     output, ask one focused clarifying question (plan mode) rather than guessing.
+
+ 16.3  Prompt construction (caching-friendly)
+ ------------------------------------------------------------------------------------------------
+   The daemon builds the CLI prompt/context in a stable, cache-friendly order (Section 22):
+     1. Stable system prompt (Director role, rules, tool contract) - frozen.
+     2. The project STYLE.md (changes rarely).
+     3. The deterministic MCP tool list (sorted).
+     4. The current EDD + analysis summaries (per-session).
+     5. The user's latest intent (volatile, last).
+   Stable content first preserves the prompt cache across turns; volatile content (the new request,
+   timestamps) goes last. Subagents receive only their relevant slice.
+
+ 16.4  Claude CLI invocation and event protocol
+ ------------------------------------------------------------------------------------------------
+   - Spawn: claude -p "<prompt>" --output-format stream-json --input-format stream-json
+            [--resume <sessionId>] [--model <id>] [effort/permission flags] [--mcp-config ...]
+   - Parse streamed events: thinking, tool_use, tool_result, usage, result; map them to cockpit
+     events (Section 19). A versioned adapter isolates the codebase from CLI schema changes.
+   - Sessions: one per cockpit conversation; resumable; interruptible.
+   (Full event schema + adapter contract: Appendix C; docs/11-prompt-and-intent-engine.md.)
+
+ 16.5  Plan / auto modes and permissions
+ ------------------------------------------------------------------------------------------------
+   - Plan mode: the Director proposes a blueprint and waits for approval before executing
+     (mirrors Claude Code plan mode and the PoC's blueprint step). Default for large operations.
+   - Auto mode: execute end to end with bounded autonomy, pausing only for gated actions.
+   - Permission system: hard-to-reverse actions (overwriting a deliverable, network import,
+     installing software, deleting assets) are gated per the permission mode; the cockpit renders
+     approval prompts.
+
+ 16.6  Memory
+ ------------------------------------------------------------------------------------------------
+   - Session memory (CLI transcript, compacted), project memory (memory/*.md: style decisions,
+     prior critiques, user preferences), and artifact memory (versioned EDD/plan/transcript). The
+     Director consults project memory to stay consistent across sessions.
+
+ 16.7  Cost and effort control
+ ------------------------------------------------------------------------------------------------
+   - Model + effort are user-set (control surface) and per-agent-defaulted (Section 9.9).
+   - Prompt caching, cheap-model subagents, bounded turns/effort, and a usage meter keep cost
+     visible and controlled (Section 22). The usage/limit surface from the CLI is shown live.
+   Deep dive: docs/11-prompt-and-intent-engine.md, Appendix C.
+
+================================================================================================
+ 17. WORKSPACE DESIGN AND FILE STRUCTURE
+================================================================================================
+
+ 17.1  Application-level layout (per machine / per user)
+ ------------------------------------------------------------------------------------------------
+   <install dir>/                      the Electron app, daemon, bundled tools (ffmpeg, node,
+                                       python+torch toolchain, Remotion runtime), MCP server
+   <user data dir>/OpenVideo/
+     config/                           app settings, hardware/capability profile, control defaults
+     secrets/                          encrypted credentials/keystore (Section 23)
+     models/                           downloaded model weights (Whisper, optional packs) - shared
+     cache-global/                     content-addressed cache shared across projects (optional)
+     plugins/                          installed plugins (agents, styles, templates, renderers)
+     logs/                             app + daemon logs, diagnostics
+     projects/                         all user projects (each is a self-contained dir below)
+
+ 17.2  Per-project layout (self-contained, portable, git-backed)
+ ------------------------------------------------------------------------------------------------
+   projects/<project>/
+     project.json        identity + dimensions + platform + refs (Section 13.3)
+     STYLE.md            the look/brand system constraining outputs (Section 13.6, 14-doc)
+     assets/             imported source media + manifest.json (hashes + probe)         [INPUT]
+     downloads/          sandboxed imports (yt-dlp) before promotion to assets/         [INPUT]
+     transcripts/        ASR transcripts + timings (authoritative)                      [DERIVED]
+     plans/              approved creative blueprints (versioned)                       [PLAN]
+     timelines/          the EDD(s) - the Video AST(s) (the heart; git-versioned)       [AST]
+     agents/             project-local agent/subagent definitions + overrides           [CONFIG]
+     prompts/            saved prompts / prompt history for this project                [HISTORY]
+     memory/             project memory (style decisions, critiques, preferences)       [MEMORY]
+     plugins/            project-local plugins (in addition to global)                  [EXT]
+     models/             project-pinned model references (usually link to shared)       [REF]
+     cache/              content-addressed render-node cache + proxies + index.json     [CACHE]
+     renders/            intermediate + preview renders + render records (provenance)   [OUTPUT]
+     exports/            final platform-optimized deliverables                          [OUTPUT]
+     versions/           tagged snapshots / named versions of the edit                  [HISTORY]
+     backups/            periodic safety backups of project state                       [SAFETY]
+     logs/               per-project logs                                               [OPS]
+
+   Purpose of each directory:
+     assets/      authoritative source media; never mutated; everything derives from here.
+     downloads/   quarantine for fetched media pending the user's promotion (permission-gated).
+     transcripts/ machine-readable speech with timings; source of truth for captions/cuts.
+     plans/       the approvable creative blueprints (human-readable + structured).
+     timelines/   the EDDs - the declarative edit; the single contract between agents and engine.
+     agents/      lets a project override or add specialized agents/skills (e.g. a house caption
+                  agent) without touching the app.
+     prompts/     a searchable history of what was asked (reproducibility + reuse).
+     memory/      durable facts the agents consult across sessions (consistency).
+     plugins/     project-scoped extensions (a client-specific look pack, say).
+     models/      pins which model weights/versions this project expects (reproducibility).
+     cache/       makes re-rendering incremental and fast; safe to delete (regenerable).
+     renders/     work product + provenance (which EDD/tool versions produced what).
+     exports/     the things the user actually ships.
+     versions/    named checkpoints ("v1 sent to client", "vertical cut") on top of git history.
+     backups/     belt-and-suspenders recovery independent of git.
+     logs/        debugging and audit for this project's operations.
+
+ 17.3  Versioning model (git-backed)
+ ------------------------------------------------------------------------------------------------
+   - The project is a git repository. Each applied edit commits the changed EDD/plan/STYLE/
+     transcript with a message attributing the agent and rationale (from provenance). This yields
+     diff, blame, rollback, branching ("try a punchier hook on a branch"), and reproducibility -
+     for free, using the most battle-tested versioning system in existence.
+   - Large binaries (assets, renders, cache) are git-ignored or tracked via LFS-style pointers;
+     the durable, versioned state is the small JSON/markdown (EDD/plan/STYLE/transcript) plus
+     content hashes that tie commits to specific media.
+   - "versions/" provides human-named snapshots layered on commits for non-technical recall.
+
+ 17.4  Asset management and hashing
+ ------------------------------------------------------------------------------------------------
+   - On import, each asset is content-hashed (sha256) and probed; the hash is the identity used in
+     the EDD and cache keys, so identical media is deduplicated and renders are reproducible.
+   - Proxies live in cache/ keyed off the source hash; deleting cache/ never loses real data.
+
+ 17.5  Portability
+ ------------------------------------------------------------------------------------------------
+   - A project directory is self-contained (assets + EDD + style + history). Zipping/cloning it
+     moves the entire reproducible edit. Cache/renders are regenerable and need not travel.
+   Deep dive: docs/12-workspace-and-file-structure.md.
+
+================================================================================================
+ 18. USER EXPERIENCE (UX)
+================================================================================================
+
+ 18.1  The cockpit at a glance
+ ------------------------------------------------------------------------------------------------
+   A calm, premium, keyboard-first desktop app. Default layout (resizable, dockable):
+
+     +-------------------+-------------------------------------------+--------------------+
+     | Projects / Assets |  Conversation (chat)                      |  Preview           |
+     | (left rail)       |  - user intent + agent responses          |  (sandboxed iframe:|
+     |                   |  - plan proposals (approve/amend)         |   Remotion/render) |
+     |                   |  - inline approvals (permissions)         |  + EDD inspector/  |
+     |                   |-------------------------------------------|    diff viewer     |
+     |                   |  Live "alive" Terminal                    |                    |
+     |                   |  Thinking... Analyzing footage...         |  Render queue +    |
+     |                   |  Detecting silence... Rendering captions  |  progress          |
+     +-------------------+-------------------------------------------+--------------------+
+     | Control surface (bottom bar): model [Opus|Sonnet|Haiku]  effort [low..max]         |
+     |   mode [plan|auto]  permissions [...]   |   Usage/limits meter [#####----]          |
+     +-------------------------------------------------------------------------------------+
+
+ 18.2  The control surface
+ ------------------------------------------------------------------------------------------------
+   - Model picker: Opus (claude-opus-4-8, default/quality), Sonnet (claude-sonnet-4-6, balanced),
+     Haiku (claude-haiku-4-5, fast/cheap). Maps directly to CLI --model.
+   - Effort: low / medium / high / xhigh / max (maps to CLI effort). A global "fast vs max quality"
+     bias the Director propagates to subagents (Section 9.9).
+   - Mode: plan (propose-then-approve) vs auto (bounded autonomy). Maps to plan/permission flags.
+   - Permissions: per-category gating of hard-to-reverse actions (render-overwrite, import,
+     install, delete) with inline approval prompts.
+   These are exactly the controls the user envisioned ("OPUS or SONNET, high low medium xhigh ...
+   plan mode, auto mode") and they are first-class, not buried in settings.
+
+ 18.3  Usage and limits meter
+ ------------------------------------------------------------------------------------------------
+   - A live meter shows token/cost usage for the session and progress toward the user's Claude
+     plan limits (parsed from the CLI's usage events), with a clear "approaching limit" warning -
+     the user's explicit request. (Section 22 details how usage is sourced and surfaced.)
+
+ 18.4  Media drop and workspace
+ ------------------------------------------------------------------------------------------------
+   - Drag-drop a clip anywhere to import it into the active project (or create one). The left rail
+     browses projects and assets; selecting an asset scopes "this clip" for intent resolution.
+
+ 18.5  Preview and EDD inspector
+ ------------------------------------------------------------------------------------------------
+   - The preview pane shows the rendered result in a sandboxed iframe (open-design pattern).
+   - The EDD inspector renders the Video AST as a navigable tree with provenance ("why is this
+     here?") and a diff view across versions ("what changed when I asked for a punchier hook?").
+     This is how "every edit is explainable/inspectable" becomes tangible UX.
+
+ 18.6  The canonical interaction (the experience the product promises)
+ ------------------------------------------------------------------------------------------------
+   1. User opens OpenVideo. The cockpit appears; a terminal is already open.
+   2. The system prepares the environment (Installation Agent, tiered) with live status.
+   3. User drops IMG_1554.mp4 and types: "Edit this into a premium reel."
+   4. The terminal comes alive: Thinking... Analyzing footage... Building transcript...
+      Detecting silence... Finding jump cuts... Generating timeline...
+   5. In plan mode, the Director presents a blueprint; the user approves (or amends in language).
+   6. Execution: Generating B-roll... Rendering captions... Optimizing audio... Running FFmpeg...
+      Rendering preview... Validating output...
+   7. The preview appears; QA reports it meets the bar (or proposes fixes).
+   8. The user says "ship it for Instagram"; the Export agent produces and verifies the file.
+   No timeline was touched; no tool was installed by hand; every step was visible and explainable.
+
+ 18.7  Plan-mode and approval UX
+ ------------------------------------------------------------------------------------------------
+   - Blueprints render as readable, structured proposals with an Approve / Amend (in language) /
+     Reject affordance. Permission prompts are inline, specific ("Overwrite exports/final.mp4?"),
+     and remembered per policy.
+
+ 18.8  Accessibility and keyboard-first
+ ------------------------------------------------------------------------------------------------
+   - Full keyboard control (command palette, focus management), screen-reader labels, high-contrast
+     and reduced-motion options, scalable type. The terminal/chat is fully navigable without a mouse.
+
+ 18.9  Design language
+ ------------------------------------------------------------------------------------------------
+   - Premium, restrained, brand-aware - the open-design / Claude Design sensibility: calm surfaces,
+     purposeful motion, strong typographic hierarchy, dark-first with a light option. The app's own
+     UI is itself governed by a design-token system (and the project STYLE.md governs outputs).
+   Deep dive: docs/13-ux-and-terminal.md, docs/14-style-and-design-system.md.
+
+================================================================================================
+ 19. TERMINAL EXPERIENCE
+================================================================================================
+
+ 19.1  Philosophy - the terminal should feel alive
+ ------------------------------------------------------------------------------------------------
+   The terminal is the heartbeat of the product. It must convey momentum and intelligence without
+   drowning the user in raw complexity. Two layers:
+     - The "alive" layer (default): human-legible status lines that narrate what the system is
+       doing right now ("Analyzing footage...", "Detecting silence...", "Rendering captions...").
+     - The "raw" layer (on demand): the actual underlying activity - tool invocations, ffmpeg
+       command lines, stderr, exit codes - for power users and debugging.
+
+ 19.2  Event-to-line mapping
+ ------------------------------------------------------------------------------------------------
+   Daemon/agent events map to friendly status lines:
+     CLI thinking            -> "Thinking..."
+     Planner running         -> "Planning the edit..."
+     probe/transcribe        -> "Analyzing footage..." / "Building transcript..."
+     detect_silence/cuts     -> "Detecting silence..." / "Finding jump cuts..."
+     EDD assembly            -> "Generating timeline..."
+     B-roll agent            -> "Generating B-roll..."
+     Remotion render         -> "Rendering captions..." / "Rendering motion graphics..."
+     level_audio             -> "Optimizing audio..."
+     ffmpeg_compose          -> "Running FFmpeg..." / "Compositing..."
+     preview render          -> "Rendering preview..."
+     QA/Validation           -> "Validating output..."
+     export                  -> "Exporting for Instagram..."
+   Each line carries a phase, an optional progress bar/ETA, and a disclosure to the raw layer.
+
+ 19.3  Progress, background jobs, notifications
+ ------------------------------------------------------------------------------------------------
+   - Long operations run in the background with streamed progress and ETA; the user can keep
+     working or queue more. Completion raises a notification (the PoC repeatedly showed users want
+     this). Jobs are cancellable.
+
+ 19.4  The connected, behind-the-scenes terminal
+ ------------------------------------------------------------------------------------------------
+   - A real, connected terminal view (the "raw" layer) shows the actual commands and output the
+     daemon runs, so nothing is hidden from a user who wants to see it - matching the user's vision
+     of "a connected terminal open that works as behind the scenes."
+
+ 19.5  Legibility rules
+ ------------------------------------------------------------------------------------------------
+   - Never expose raw complexity unnecessarily; never hide it when asked. Errors are translated to
+     plain language with a "show details" disclosure. Color/typography keep the stream scannable.
+   Deep dive: docs/13-ux-and-terminal.md.
+
+================================================================================================
+ 20. PLUGIN SDK AND ECOSYSTEM
+================================================================================================
+
+ 20.1  Philosophy
+ ------------------------------------------------------------------------------------------------
+   Following open-design: skills, agents, styles, templates, and renderers are plain files anyone
+   can author, inspect, and share. The core stays small; capability grows through plugins. This is
+   how OpenVideo becomes a platform, not just an app.
+
+ 20.2  Plugin types
+ ------------------------------------------------------------------------------------------------
+   - Agents/Skills: new specialized agents or task playbooks (SKILL.md / agent definitions).
+   - Caption styles: parameterized caption looks (consumed by the Caption/Motion agents).
+   - Transitions: new transition types (Remotion/FFmpeg-backed).
+   - Templates: full project/blueprint templates ("60s SaaS promo", "legal explainer reel").
+   - Animation packs: reusable Remotion components/motion presets.
+   - Look/Style systems: shareable STYLE.md packs ("MagnatesMedia-style", a brand kit).
+   - Renderers: alternative render engines (e.g. a HyperFrames signature-moment renderer).
+   - Music/SFX providers: royalty-safe asset sources (licensed integrations).
+   - Importers: new media-import sources (authorized).
+   - Cloud render: offload rendering to a configured backend (roadmap).
+
+ 20.3  The manifest (openvideo.json)
+ ------------------------------------------------------------------------------------------------
+   { "name": "premium-captions", "version": "1.0.0", "type": "caption-style",
+     "entry": "index.(ts|js|md)", "capabilities": ["edd:patch","remotion:component"],
+     "permissions": ["fs:project-read","fs:project-write"], "params": { ... apply-time config ... },
+     "dependencies": [ { "tool": "ffmpeg", "min": "6.0" } ],
+     "preview": "preview.png", "license": "Apache-2.0" }
+   The manifest mirrors open-design's plugin spec: declared capabilities, permissions, parameters,
+   dependencies (which the Installation Agent provisions on the tiered basis), and preview assets.
+
+ 20.4  Lifecycle
+ ------------------------------------------------------------------------------------------------
+   discover (marketplace/registry or local) -> install (verify signature/manifest; provision
+   declared deps) -> load (register capabilities with the daemon/MCP) -> run (invoked by agents or
+   the user) -> sandbox (executed under least privilege; see 20.5).
+
+ 20.5  Capabilities and permissions (sandboxing)
+ ------------------------------------------------------------------------------------------------
+   - A plugin declares the capabilities it needs (e.g. edd:patch, remotion:component, fs:project-
+     read, net:fetch); the daemon enforces them. Untrusted plugin code runs sandboxed (worker/VM
+     boundary; no ambient filesystem/network); network access is proxied (SSRF-guarded). High-risk
+     capabilities require explicit user consent. (Section 23.)
+
+ 20.6  Distribution
+ ------------------------------------------------------------------------------------------------
+   - A community registry/marketplace (open-design model) with manifests, previews, and one-click
+     install; plugins are plain folders, so they can also be shared as files or via git.
+
+ 20.7  Authoring (example)
+ ------------------------------------------------------------------------------------------------
+   - A caption-style plugin ships a Remotion component + a manifest + params; the Caption agent
+     discovers it via /capabilities and the user selects it ("use the neon caption style").
+   Deep dive: docs/15-plugin-sdk.md.
+
+================================================================================================
+ 21. DEVELOPER EXPERIENCE (DX)
+================================================================================================
+
+ 21.1  Monorepo layout (pnpm)
+ ------------------------------------------------------------------------------------------------
+   openvideo/
+     apps/
+       cockpit/        Electron + Next.js UI
+       daemon/         the privileged Node service (session, queue, MCP, installer, compiler)
+     packages/
+       edd/            EDD schema + types + validation + lowering
+       compiler/       IR + passes + DAG codegen
+       render/         render engine (FFmpeg + Remotion adapters, fallback logic)
+       mcp-server/     the OpenVideo MCP tool surface
+       cli-adapter/    versioned Claude CLI spawn + event parser (Appendix C)
+       installer/      hardware detection + tiered provisioning
+       agents/         bundled agent/skill definitions
+       remotion/       bundled Remotion components (captions, graphics)
+       shared/         types, protocol (Edit/Session), utils
+     plugins/          first-party plugins (styles, templates, transitions)
+     docs/             this documentation set
+     e2e/              end-to-end tests + golden fixtures
+
+ 21.2  Build and dev loop
+ ------------------------------------------------------------------------------------------------
+   - pnpm workspace; one command brings up the daemon + cockpit in dev (hot reload for the UI;
+     watch-rebuild for the daemon). A bundled, pinned toolchain (ffmpeg/node/python+torch/Remotion)
+     so contributors don't fight native installs (PoC lesson).
+
+ 21.3  Testing locally
+ ------------------------------------------------------------------------------------------------
+   - Unit tests on the EDD/compiler/IR; golden-frame render tests; an agent eval harness with
+     recorded fixtures so agent changes are measurable (Section 24).
+
+ 21.4  Contributing
+ ------------------------------------------------------------------------------------------------
+   - Skills, agents, styles, templates, and plugins are plain files - the lowest-friction
+     contribution path (open-design model). Core changes go through the packages above with tests.
+
+ 21.5  API stability
+ ------------------------------------------------------------------------------------------------
+   - The Edit/Session protocol, the MCP tool contract, the EDD schema, and the plugin manifest are
+     versioned with deprecation policies, so the ecosystem can rely on them.
+   Deep dive: docs/15-plugin-sdk.md, docs/04-system-architecture.md.
+
+================================================================================================
+ 22. PERFORMANCE ENGINEERING
+================================================================================================
+
+ 22.1  Performance goals
+ ------------------------------------------------------------------------------------------------
+   - Responsive UI at all times (no long task blocks the event loop).
+   - Fast iteration: a small EDD change re-renders in seconds, not minutes (incremental + cache).
+   - Exploit available hardware (GPU) but always work without it (CPU fallback).
+   - Predictable, visible cost and progress (usage meter, ETAs).
+
+ 22.2  GPU acceleration and CPU fallback
+ ------------------------------------------------------------------------------------------------
+   - ASR: CUDA torch (30-50x faster than CPU - PoC F3) when a supported NVIDIA GPU is present;
+     CPU torch otherwise.
+   - Encode: NVENC when present; libx264 otherwise.
+   - Decode/scale: hardware paths where available.
+   - The resource scheduler tags each DAG node gpu|cpu and routes to the matching pool; the
+     Optimization agent decides model size and device per the hardware profile and the user's
+     speed/quality bias. The product never silently traps a user in a 40-minute CPU transcription
+     when a one-time GPU setup makes it a minute (it offers the setup).
+
+ 22.3  Incremental and cached rendering
+ ------------------------------------------------------------------------------------------------
+   - Content-addressed cache (Section 14.4) + incremental recompile (Section 14.5) are the primary
+     speed levers: unchanged DAG nodes are never recomputed. Proxies accelerate preview.
+
+ 22.4  Parallel execution and resource scheduling
+ ------------------------------------------------------------------------------------------------
+   - Independent DAG branches run concurrently (grade || caption-render || audio-level), bounded by
+     a pool sized to CPU cores and GPU availability, with backpressure to prevent thrashing.
+   - Analysis agents fan out in parallel (Transcript || Color || Audio).
+
+ 22.5  Proxy and preview
+ ------------------------------------------------------------------------------------------------
+   - Low-res proxies + draft encodes make preview/QA fast; final uses full-res from the same IR.
+
+ 22.6  Background rendering and queue
+ ------------------------------------------------------------------------------------------------
+   - The render queue runs jobs off the UI thread with progress/ETA and cancellation; completion
+     notifications keep the user informed (PoC F9).
+
+ 22.7  Memory optimization and large projects
+ ------------------------------------------------------------------------------------------------
+   - Stream media through tools rather than loading wholesale; reference large artifacts by path;
+     cap concurrent heavy operations; spill to disk for big intermediates; lazy-load assets and
+     proxies. Long-form/large-project scale is a roadmap hardening target (Section 26).
+
+ 22.8  Agent-layer cost and latency control
+ ------------------------------------------------------------------------------------------------
+   - Prompt caching: stable context first (system prompt, STYLE.md, sorted tool list), volatile
+     last - so repeated turns hit the cache (Section 16.3).
+   - Cheap subagents: mechanical work on claude-haiku-4-5 / pure tools; reserve opus-4-8 for
+     judgment (Section 9.9).
+   - Bounded effort/turns: the Director caps iteration; the QA loop has a budget; effort is
+     user-biasable.
+   - Usage meter sourcing: the CLI emits usage on its events; the daemon aggregates per session and
+     against the user's plan, surfaces a live meter, and warns near limits (user's explicit ask).
+
+ 22.9  Distributed / cloud rendering (roadmap)
+ ------------------------------------------------------------------------------------------------
+   - The DAG is naturally distributable: nodes are content-addressed and independent branches can
+     run on remote workers. A cloud-render plugin (opt-in) can offload heavy final renders; the
+     local cache stays authoritative (Section 26).
+
+ 22.10 Crash recovery
+ ------------------------------------------------------------------------------------------------
+   - Journaled node state lets a render resume from completed nodes after a crash (Section 24.9).
+   Deep dive: docs/16-performance.md.
+
+================================================================================================
+ 23. SECURITY ARCHITECTURE
+================================================================================================
+
+ 23.1  Threat model (what we defend against)
+ ------------------------------------------------------------------------------------------------
+   - A malicious or buggy plugin attempting filesystem/network abuse or code execution.
+   - Prompt-injection via imported media/metadata/transcripts steering the agent to harmful tool
+     calls (e.g. delete files, exfiltrate data).
+   - SSRF via any outbound proxy (a plugin coaxing the proxy to hit internal endpoints).
+   - Secret leakage (API keys, provider credentials).
+   - Accidental destructive actions (overwriting/deleting the user's work).
+   - Supply-chain compromise of bundled tools/dependencies.
+
+ 23.2  Privilege model
+ ------------------------------------------------------------------------------------------------
+   - The daemon is the ONLY privileged process: it alone touches the filesystem, spawns processes,
+     and reaches the network. The renderer is sandboxed (contextIsolation on, nodeIntegration off);
+     it acts only through a typed preload bridge to the daemon. (Open-design model.)
+   - This single-privileged-process design contains blast radius: a compromised renderer or plugin
+     cannot directly act on the system.
+
+ 23.3  Tool sandboxing
+ ------------------------------------------------------------------------------------------------
+   - Media tools run as child processes with constrained arguments (typed tool specs, never raw
+     model-authored shell for privileged actions), captured output, timeouts, working directory
+     pinned to the project sandbox, and no inherited secrets.
+   - A constrained bash tool MAY exist for breadth, but hard-to-reverse actions are promoted to
+     dedicated, gated tools (the agent-design principle), so the harness can intercept/audit them.
+
+ 23.4  Plugin sandboxing and permissions
+ ------------------------------------------------------------------------------------------------
+   - Untrusted plugin code runs under least privilege (worker/VM boundary, no ambient fs/net).
+   - Plugins declare capabilities/permissions in the manifest; the daemon enforces them; high-risk
+     capabilities require explicit user consent; network goes through the SSRF-guarded proxy.
+
+ 23.5  Permission system
+ ------------------------------------------------------------------------------------------------
+   - Hard-to-reverse actions (overwrite a deliverable, delete assets, network import, install
+     software, run a plugin's privileged capability) are gated per the permission mode; the cockpit
+     renders specific, inline approval prompts and remembers per-policy decisions. Mirrors Claude
+     Code's permission modes.
+
+ 23.6  Secrets and credential storage
+ ------------------------------------------------------------------------------------------------
+   - Secrets (e.g. provider API keys for optional plugins) are stored in an OS-keychain-backed,
+     encrypted keystore - never in the EDD, prompts, logs, or project files. They are injected by
+     the daemon at call time, not exposed to the renderer, agents, or plugin sandboxes.
+   - The Claude CLI uses the user's existing subscription auth managed by the CLI itself; OpenVideo
+     does not store the user's Claude credentials.
+
+ 23.7  Network permissions and the SSRF-guarded proxy
+ ------------------------------------------------------------------------------------------------
+   - Default posture is offline. Any outbound request (model-weight download, authorized import,
+     plugin provider call) goes through the daemon's proxy with SSRF protection (block private/loop
+     back/link-local ranges, validate redirects, allowlist hosts where possible) - the open-design
+     BYOK-proxy pattern.
+
+ 23.8  Filesystem protection
+ ------------------------------------------------------------------------------------------------
+   - All file operations are validated against the project sandbox (path normalization, no
+     traversal, no symlink escape). The daemon refuses writes outside the project/app data dirs.
+   - Before any overwrite/delete, the target is inspected and the action gated (Section 23.5).
+
+ 23.9  Supply chain
+ ------------------------------------------------------------------------------------------------
+   - Bundled tools and dependencies are pinned and integrity-checked; plugins carry manifests and
+     (where distributed via the registry) signatures verified on install.
+
+ 23.10 Privacy (local-first)
+ ------------------------------------------------------------------------------------------------
+   - Footage and project data never leave the machine unless the user explicitly opts into a
+     networked feature. Telemetry is opt-in and never includes media content. This is decisive for
+     creators handling unreleased/sensitive material.
+   Deep dive: docs/17-security.md.
+
+================================================================================================
+ 24. TESTING AND QUALITY ASSURANCE
+================================================================================================
+
+ 24.1  Strategy
+ ------------------------------------------------------------------------------------------------
+   A layered strategy that treats both deterministic code (compiler/render) and non-deterministic
+   agents as testable, plus product-level QA of the actual video output.
+
+ 24.2  Unit tests (deterministic core)
+ ------------------------------------------------------------------------------------------------
+   - EDD schema validation; lowering (EDD -> IR) correctness; each compiler pass (validation, lint,
+     optimization, scheduling); cache-key computation; protocol (Edit/Session) encoding.
+
+ 24.3  Golden-frame render tests
+ ------------------------------------------------------------------------------------------------
+   - Fixed EDD + assets -> render -> compare frames/loudness/format against committed golden
+     outputs (within tolerance, encoder non-determinism pinned). Catches regressions in grade,
+     captions, composite, and export.
+
+ 24.4  Integration tests (pipeline)
+ ------------------------------------------------------------------------------------------------
+   - Run real tool chains (probe/transcribe/grade/level/compose) on small fixtures across the
+     native and PNG-sequence render paths, and across GPU/CPU paths where the CI agent allows.
+
+ 24.5  End-to-end tests
+ ------------------------------------------------------------------------------------------------
+   - Drive the cockpit -> daemon -> (stubbed or recorded) agent -> render, asserting the canonical
+     interaction (Section 18.6) produces a valid deliverable.
+
+ 24.6  Agent evaluation harness
+ ------------------------------------------------------------------------------------------------
+   - Recorded fixtures (intent + footage analysis) run through the agents with assertions on the
+     produced EDD (e.g. "hook within first 1.5s", "caption sync <= 80ms", "loudness target set",
+     "no static frame > 4s"). Lets agent/prompt changes be measured, not guessed. A rubric-based
+     QA-agent self-eval complements human spot checks.
+
+ 24.7  Determinism tests
+ ------------------------------------------------------------------------------------------------
+   - Same EDD + assets + tool versions -> same output hash (video stream) within pinned tolerance.
+
+ 24.8  Performance / regression tests
+ ------------------------------------------------------------------------------------------------
+   - Track render time and incremental re-render time on benchmark projects; flag regressions; verify
+     "change one caption -> only caption track re-renders".
+
+ 24.9  Crash and recovery tests
+ ------------------------------------------------------------------------------------------------
+   - Kill the app/daemon mid-render and assert: no corrupted cache, committed EDD intact, render
+     resumes from journaled state or restarts cleanly.
+
+ 24.10 CI
+ ------------------------------------------------------------------------------------------------
+   - Windows-first CI runners (matching ADR-0007) run unit/integration/golden/e2e; agent evals run
+     on a schedule (cost-aware). Deep dive: docs/18-testing-and-qa.md.
+
+================================================================================================
+ 25. DEPLOYMENT, PACKAGING, AND RELEASE
+================================================================================================
+
+ 25.1  Packaging
+ ------------------------------------------------------------------------------------------------
+   - electron-builder produces a Windows installer (first), bundling the cockpit, the daemon, and a
+     pinned core toolchain (ffmpeg/ffprobe, node/pnpm, Remotion runtime) plus the bundled Python +
+     torch toolchain stub; heavy items (model weights, CUDA) are fetched by the Installation Agent
+     on the tiered basis (ADR-0004). macOS/Linux packaging follows (ADR-0007).
+
+ 25.2  Channels
+ ------------------------------------------------------------------------------------------------
+   - stable / beta / nightly channels; pinned dependency sets per release for reproducibility.
+
+ 25.3  Auto-update
+ ------------------------------------------------------------------------------------------------
+   - Background, signed auto-update for the app; the Installation Agent handles tool/model upgrades
+     with verification and rollback (Section 10.8).
+
+ 25.4  Telemetry (opt-in)
+ ------------------------------------------------------------------------------------------------
+   - Strictly opt-in, privacy-preserving (no media, no project content): crash signals, anonymized
+     performance metrics, feature usage - to guide engineering. Off by default.
+
+ 25.5  Diagnostics / doctor
+ ------------------------------------------------------------------------------------------------
+   - A "doctor" command re-profiles hardware, verifies the toolchain, health-checks the Remotion
+     compositor, and self-heals (re-install/repair) - turning the PoC's manual debugging into a
+     one-click flow.
+
+ 25.6  Crash reporting and recovery
+ ------------------------------------------------------------------------------------------------
+   - Local crash logs + (opt-in) crash reports; journaled state enables resume-after-crash for
+     renders and preserves project integrity (Section 24.9).
+
+ 25.7  Release process
+ ------------------------------------------------------------------------------------------------
+   - Versioned releases with changelogs; schema/protocol/manifest versions and migrations called
+     out; golden-frame and e2e suites gate releases.
+   Deep dive: docs/19-deployment-and-release.md.
+
+================================================================================================
+ 26. FUTURE VISION AND ROADMAP
+================================================================================================
+
+ 26.1  Phased plan
+ ------------------------------------------------------------------------------------------------
+   Phase 0 - Research (done / ongoing). The proof-of-concept (summary.txt) and this PRD. Validate
+     that the pipeline and the Claude-CLI backbone work end to end. EXIT: this document approved.
+
+   Phase 1 - Architecture & scaffolding. Monorepo; Edit/Session protocol; EDD schema + validation;
+     CLI adapter (Appendix C); OpenVideo MCP server skeleton; Installation Agent (core tier);
+     cockpit shell with chat + live terminal + control surface + usage meter. EXIT: a fresh
+     Windows box can install core deps and hold a live Claude session in the cockpit.
+
+   Phase 2 - Prototype (the cockpit + first vertical). The compiler (EDD->IR->DAG), the render
+     engine (FFmpeg + Remotion with the PNG-sequence fallback), the analysis tools (probe/
+     transcribe/detect/level/grade), and the reel pipeline as the flagship plugin. EXIT: "make a
+     reel" works end to end on the PoC clip, reproducibly, with preview + export.
+
+   Phase 3 - Alpha. The full agent roster + QA loop; plan-mode UX; EDD inspector/diff; incremental
+     cache; tiered heavy-install (Whisper/CUDA); STYLE.md look system; basic plugin loading.
+     EXIT: a non-technical user completes UC1-UC10 without manual tooling.
+
+   Phase 4 - Beta. Plugin SDK + marketplace; more caption styles/transitions/templates; GPU paths
+     hardened; performance/regression suite; crash recovery; doctor; telemetry (opt-in).
+     EXIT: external plugin authors ship; stability metrics meet bar.
+
+   Phase 5 - Production (1.0). Windows GA; signed auto-update; full docs; golden-frame/e2e gates;
+     accessibility complete. EXIT: 1.0 release.
+
+   Phase 6 - Plugin SDK maturity & ecosystem. Stable versioned APIs; richer renderers (e.g.
+     HyperFrames signature-moment); look-system marketplace; templates for common formats.
+
+   Phase 7 - Cloud rendering (opt-in). Offload heavy final renders to remote workers using the
+     content-addressed DAG; local cache authoritative; privacy-preserving.
+
+   Phase 8 - Collaboration. Shared projects, comments, review/approval flows; multi-user EDD
+     editing (CRDT/merge on the AST).
+
+   Phase 9 - Cross-platform. macOS (Metal/VideoToolbox) and Linux (VAAPI) builds (ADR-0007).
+
+   Phase 10 - Long-form & advanced. Multi-hour/multi-track scale; advanced color/audio; generative
+     media via authorized plugins; automation/workflow engine (n8n-style triggers + batch).
+
+   Phase 11 - Enterprise. SSO, audit, policy controls, team libraries, on-prem render.
+
+   Phase 12 - Mobile. A companion/mobile client (capture, review, light edits).
+
+ 26.2  Long-term vision
+ ------------------------------------------------------------------------------------------------
+   OpenVideo becomes the open, agent-native creative OS for video: any creator, any platform,
+   conversation-driven, reproducible, extensible, and local-first - the "Open Design for video."
+   Deep dive: docs/20-roadmap.md.
+
+================================================================================================
+ 27. ENGINEERING RISKS
+================================================================================================
+
+   ID   Risk                                  Impact  Likely  Mitigation
+   ---  ------------------------------------  ------  ------  --------------------------------------
+   R1   Claude CLI flags/event schema drift   High    Med     Versioned cli-adapter; Appendix C
+                                                               contract; pin CLI version; smoke tests
+   R2   Native toolchain fragility (Windows)  High    High    Installation Agent verify/repair/
+                                                               rollback; bundled pinned toolchain
+   R3   Remotion native compositor failure    Med     Med     Auto PNG-sequence + FFmpeg fallback
+                                                               (ADR-0006); health check + doctor
+   R4   Agent reliability / quality variance  High    Med     Structured EDD + validation gates; QA/
+                                                               critique loop; eval harness; bounded
+                                                               autonomy
+   R5   Cost/latency of agentic sessions      Med     Med     Prompt caching; cheap subagents;
+                                                               effort/turn budgets; usage meter
+   R6   ASR speed on CPU                       Med     High    Tiered GPU enablement; faster-whisper;
+                                                               clear user trade-off (PoC F3)
+   R7   Determinism gaps (encoders)           Med     Med     Pin encoders/settings; tolerance-based
+                                                               golden tests
+   R8   Scope creep (NLE depth, generative)   High    Med     Cockpit-first; strict non-goals;
+                                                               phased roadmap
+   R9   Plugin security                       High    Low     Sandbox + capability/permission model;
+                                                               signed registry; SSRF-guarded proxy
+   R10  Prompt-injection via media/metadata   Med     Med     Typed gated tools (no raw shell for
+                                                               privileged acts); permission gates;
+                                                               treat imported text as untrusted
+   R11  Auth coupling to Claude subscription  Med     Low     Document Agent-SDK/API-key alternative
+                                                               (ADR-0002); adapter isolates auth path
+   R12  Large-project memory/perf             Med     Med     Streaming, proxies, spill-to-disk;
+                                                               long-form is a later phase
+   Deep dive: docs/21-risks-and-open-questions.md.
+
+================================================================================================
+ 28. OPEN QUESTIONS
+================================================================================================
+
+   Q1  Daemon topology: Electron main vs a separate forked service for render durability - confirm
+       at Phase 1 (leaning forked service so a UI crash never kills a render).
+   Q2  EDD time model: pure seconds vs frame-exact rationals at the EDD level (IR will be
+       frame-exact regardless) - decide in Phase 1.
+   Q3  Caption word-timing source: distribute-within-segment vs a dedicated aligner (WhisperX) as
+       default - benchmark in Phase 2.
+   Q4  STYLE derivation: how far to push "make it feel like X" (style transfer) vs explicit token
+       authoring - scope in Phase 3.
+   Q5  Cache scope: per-project only vs a shared global cache by default - measure hit rates.
+   Q6  Plugin runtime isolation: worker threads vs a heavier VM/sandbox for untrusted code - decide
+       before the marketplace opens (Phase 4).
+   Q7  Usage/limit surfacing fidelity: exactly what the CLI exposes vs estimation - validate against
+       the live CLI event stream.
+   Q8  Generative media policy: which (if any) providers ship as first-party vs community-only.
+   Q9  HDR delivery: when to support HDR export vs SDR-only default.
+   Q10 Multi-user EDD merge strategy (CRDT vs operational transform) - defer to Phase 8 but keep
+       the EDD merge-friendly now.
+   Deep dive: docs/21-risks-and-open-questions.md.
+
+================================================================================================
+ 29. TRADE-OFFS
+================================================================================================
+
+ The major trade-offs accepted, with rationale:
+
+   29.1 Intent-first over timeline-first. We trade fine-grained manual control for speed, reproducibility,
+        and accessibility. Mitigated by the EDD inspector + language-driven fine adjustment; users
+        who want a manual GUI NLE are not the target (Non-goals).
+
+   29.2 Spawn the Claude CLI over the Agent SDK. We trade some type-safety/in-process ergonomics for
+        the user's existing subscription auth (huge cost/adoption win) and full reuse of the CLI's
+        skills/MCP/plan-mode/usage. The SDK remains a documented alternative (ADR-0002).
+
+   29.3 Electron over Tauri. We trade binary size/RAM for ecosystem maturity, media support, and 1:1
+        reuse of open-design's proven topology and our PoC's Windows validation (ADR-0001).
+
+   29.4 Cockpit-first over video-first v1. We trade an immediately flashy demo for a reusable spine;
+        video ships as the first vertical so we still demonstrate the wow (ADR-0003).
+
+   29.5 Tiered install over fully-autonomous. We trade "everything ready instantly" for "no multi-GB
+        surprises and a fast first run"; heavy items install on first use with consent (ADR-0004).
+
+   29.6 Editing-as-compilation (EDD/IR/DAG) over direct tool scripting. We trade up-front
+        architectural complexity for explainability, reproducibility, incrementality, and caching -
+        the qualities that make the product trustworthy and fast (ADR-0005).
+
+   29.7 Remotion + FFmpeg composite (with PNG-seq fallback) over a single render engine. We trade a
+        more complex render path for robustness against the exact failure the PoC hit, and for the
+        best of both worlds (declarative graphics + deterministic media) (ADR-0006).
+
+   29.8 Windows-first over cross-platform day one. We trade immediate Mac/Linux reach for matching
+        the user's machine and the validated PoC, shipping sooner; cross-platform is a fast follow
+        (ADR-0007).
+
+   29.9 Local-first over cloud-first. We trade managed-cloud convenience for privacy and offline
+        capability; cloud is opt-in and later (ADR-0008).
+
+================================================================================================
+ 30. ALTERNATIVE ARCHITECTURES (CONSIDERED AND COMPARED)
+================================================================================================
+
+ For each major decision, the viable alternatives, their pros/cons, and why the chosen option wins.
+ Full records in docs/adr/.
+
+ 30.1  Desktop shell
+   A) Electron + Next.js [CHOSEN] - mature, rich media/Node ecosystem, 1:1 with open-design,
+      PoC-validated on Windows. Con: heavier binaries/RAM.
+   B) Tauri + Rust core - smaller/faster, modern; Con: diverges from open-design, fiddlier Windows
+      toolchain (WebView2/MSVC), smaller media ecosystem. Reconsider if footprint becomes critical.
+   C) Web + local daemon only - fastest to boot; Con: weak OS integration (dialogs, GPU detect,
+      auto-update, tray). Useful as a dev/from-source mode (open-design runs this way), not the
+      shipped product.
+
+ 30.2  Agent backbone
+   A) Spawn Claude CLI headless [CHOSEN] - subscription auth, full CLI feature reuse, literal to the
+      user's steer. Con: parse stream-json; CLI is a moving target (mitigated by the adapter).
+   B) Claude Agent SDK (library) - type-safe, in-process; Con: typically API-key billed (cost),
+      less "use what you already have". The documented alternative.
+   C) Agent-agnostic (any CLI: Claude/Codex/Cursor...) - max flexibility/OSS appeal; Con: largest
+      surface, hardest to make reliable. A possible later abstraction.
+   D) Custom orchestration on the raw Messages API - maximum control; Con: rebuild the harness
+      (subagents/MCP/permissions/compaction) we get for free. Rejected for v1.
+
+ 30.3  Edit representation
+   A) Video AST / EDD + IR + DAG [CHOSEN] - explainable, reproducible, incremental, cacheable.
+      Con: up-front complexity.
+   B) Direct tool scripting (the PoC's mode) - simplest; Con: not reproducible/inspectable/
+      incremental; no clean reasoning/execution boundary. Rejected as the product core.
+   C) Adopt OpenTimelineIO as the native model - interoperable; Con: heavier, NLE-centric, less
+      intent-bearing than our EDD. Consider as an import/export format, not the internal AST.
+
+ 30.4  Render engine
+   A) Remotion + FFmpeg composite, native-or-PNG-seq fallback [CHOSEN] - declarative graphics +
+      deterministic media + robustness. Con: two substrates.
+   B) FFmpeg-only (drawtext/overlay filters) - one tool; Con: weak for rich motion graphics/word-
+      level caption animation; PoC showed drawtext font/complexity pain. Insufficient alone.
+   C) Remotion-only (native) - one declarative engine; Con: the native compositor failed in the
+      PoC; encoding everything in React is heavy for raw media ops. Insufficient alone.
+   D) HyperFrames (HTML/CSS/GSAP -> MP4) as the engine - strong for captions; Con: cut-sensitive,
+      narrower; better as an optional renderer plugin.
+
+ 30.5  Installation strategy
+   A) Tiered (core auto, heavy on-demand) [CHOSEN] - balance. B) Fully autonomous (install all up
+   front) - zero-config but big first download. C) Ask-before-each - max control, most friction.
+   (A) chosen; (B)/(C) selectable as user preferences.
+
+ 30.6  Concurrency/topology
+   A) Single privileged daemon + sandboxed renderer [CHOSEN] - security + open-design parity.
+   B) Privileged renderer (nodeIntegration) - simpler; Con: unacceptable blast radius. Rejected.
+
+ 30.7  Platform
+   A) Windows-first [CHOSEN]. B) Cross-platform day one - cleaner abstractions, slower v1.
+   C) Windows+macOS - middle ground. (A) chosen for speed and PoC alignment.
+
+================================================================================================
+ 31. DECISION RECORDS (SUMMARY)
+================================================================================================
+
+ Full ADRs (context, options, decision, consequences) live in docs/adr/. Summary:
+
+   ADR-0001  Electron + Next.js desktop shell.            Status: Accepted.
+   ADR-0002  Spawn the Claude CLI headless as backbone.   Status: Accepted. (Agent SDK = alt.)
+   ADR-0003  Agentic cockpit first; video = first vertical. Status: Accepted.
+   ADR-0004  Tiered installation (core auto / heavy on-demand). Status: Accepted.
+   ADR-0005  Video AST/EDD + IR + execution DAG (editing-as-compilation). Status: Accepted.
+   ADR-0006  Remotion + FFmpeg composite with PNG-sequence fallback. Status: Accepted.
+   ADR-0007  Windows-first; macOS/Linux later.            Status: Accepted.
+   ADR-0008  Local-first; daemon sole privileged process; SSRF-guarded proxy. Status: Accepted.
+
+================================================================================================
+ 32. APPENDICES
+================================================================================================
+
+ The following references support implementation. Full content lives under docs/appendices/.
+
+   Appendix A - Glossary (docs/appendices/A-glossary.md)
+     EDD, Video AST, IR, execution DAG, cockpit, daemon, the CLI, MCP, STYLE.md, proxy, golden
+     frame, content-addressed cache, tonemap, LUFS, NVENC, plan/auto mode, look system, etc.
+
+   Appendix B - FFmpeg recipes from the proof-of-concept (docs/appendices/B-ffmpeg-recipes.md)
+     The exact, proven invocations: two-pass loudnorm to -14 LUFS + afftdn denoise; HLG->Rec.709
+     SDR tonemap + light grade (zscale/tonemap); alternating "breathe" punch-in zoom expression;
+     scene/frame-diff cut detection; silencedetect smart-cut; PNG-sequence overlay + composite +
+     mux; platform-optimized H.264/AAC export. These are the canonical specs the typed FFmpeg tool
+     constructs.
+
+   Appendix C - Claude CLI event protocol & adapter contract (docs/appendices/C-claude-cli-event-protocol.md)
+     The spawn invocation; the stream-json event types consumed (thinking, tool_use, tool_result,
+     usage, result); session resume/interrupt; how events map to cockpit/terminal events; the
+     versioned adapter's responsibilities and compatibility policy.
+
+   Appendix D - Data schema reference (docs/appendices/D-data-schema-reference.md)
+     Full JSON Schemas for the EDD, project manifest, transcript, plan, asset manifest, cache
+     index, and render record; the STYLE.md section schema; the plugin manifest (openvideo.json).
+
+------------------------------------------------------------------------------------------------
+ END OF PRODUCT REQUIREMENTS DOCUMENT
+ OpenVideo - an AI-native, intent-first, programmable video-editing operating system.
+ Companion architecture set: ./docs/  (start at ./docs/00-INDEX.md)
+================================================================================================
