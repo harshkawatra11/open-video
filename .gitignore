@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# OpenVideo runtime artifacts (regenerable; see PRD §17)
+**/cache/
+**/renders/
+**/exports/
+**/downloads/
+**/.openvideo-cache/
+
+# media (large binaries are not the versioned state; see PRD §17.3)
+*.mp4
+*.mov
+*.wav
+*.mp3
+*.png
+!docs/**/*.png
+!**/fixtures/**
+
+# ad-hoc verification scripts (delete once proven; see CLAUDE.md verification discipline)
+apps/*/.scratch/
+**/.scratch/
+.openvideo-work/
+
+# local design reference screenshots (not versioned product state)
+app-screens-of-claude-design/
+
+# logs / os
+logs/
+*.log
+.DS_Store
+Thumbs.db
+
+# secrets / local env
+.env
+.env.*
+secrets/

@@ -1,0 +1,19 @@
+{
+  "name": "openvideo",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo — AI-native, intent-first, programmable video-editing OS. See PRODUCT_REQUIREMENTS_DOCUMENT.txt and docs/.",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=24"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node apps/daemon/src/server.ts",
+    "app": "node apps/daemon/src/server.ts",
+    "test": "pnpm -r --if-present test",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "build": "pnpm -r --if-present build"
+  },
+  "license": "Apache-2.0"
+}
