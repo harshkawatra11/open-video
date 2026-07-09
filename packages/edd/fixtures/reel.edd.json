@@ -1,0 +1,85 @@
+{
+  "schemaVersion": "1.0",
+  "id": "edd_reel_sample",
+  "project": {
+    "id": "prj_sample",
+    "width": 1080,
+    "height": 1920,
+    "fps": 60,
+    "colorSpace": "bt709",
+    "platform": "instagram_reel",
+    "styleRef": "STYLE.md"
+  },
+  "sources": [
+    {
+      "id": "src_1",
+      "path": "assets/IMG_1554.mp4",
+      "hash": "sha256:placeholder",
+      "probe": {
+        "durationS": 66.2,
+        "w": 1080,
+        "h": 1920,
+        "fps": 60,
+        "vcodec": "h264",
+        "acodec": "aac",
+        "color": "hlg/bt2020"
+      }
+    }
+  ],
+  "timeline": {
+    "durationS": 64.7,
+    "tracks": [
+      {
+        "id": "aroll",
+        "kind": "video",
+        "clips": [
+          { "id": "c1", "src": "src_1", "inS": 0.5, "outS": 6.2, "transform": { "punchIn": { "from": 1.0, "to": 1.03, "ease": "io" } } },
+          { "id": "c2", "src": "src_1", "inS": 6.2, "outS": 13.1, "transform": { "punchIn": { "from": 1.03, "to": 1.0, "ease": "io" } } }
+        ],
+        "transitions": [{ "between": ["c1", "c2"], "type": "cut" }],
+        "effects": [
+          { "type": "color", "spec": { "tonemap": "hlg_to_bt709", "wb": "neutralize", "contrast": "s_curve_light", "vibrance": 0.1, "sharpen": 0.6, "protectSkin": true } }
+        ]
+      },
+      {
+        "id": "captions",
+        "kind": "captions",
+        "styleRef": "style.caption.premium",
+        "words": [
+          { "t": "SALE", "startS": 0.62, "endS": 0.8, "emph": true },
+          { "t": "DEED", "startS": 0.8, "endS": 1.02, "emph": true },
+          { "t": "ko", "startS": 1.02, "endS": 1.14, "emph": false }
+        ]
+      },
+      {
+        "id": "graphics",
+        "kind": "graphics",
+        "items": [
+          { "id": "g_hook", "component": "Hook", "props": { "headline": "SALE DEED" }, "startS": 0.0, "endS": 2.7 }
+        ]
+      },
+      {
+        "id": "audio",
+        "kind": "audio",
+        "voice": { "chain": ["highpass=80", "afftdn=nr=12:nf=-25", "deesser"], "loudness": { "targetLUFS": -14, "tpDb": -1.5 } },
+        "music": { "src": null, "targetLUFS": -24, "duck": "sidechain" },
+        "sfx": [{ "cue": "impact", "atS": 0.0 }, { "cue": "whoosh", "atS": 6.2 }]
+      }
+    ]
+  },
+  "export": {
+    "container": "mp4",
+    "vcodec": "h264_high",
+    "acodec": "aac",
+    "w": 1080,
+    "h": 1920,
+    "fps": 60,
+    "crf": 18,
+    "faststart": true,
+    "preset": "instagram_reel"
+  },
+  "provenance": [
+    { "node": "timeline.tracks.aroll.effects[0]", "by": "ColorAgent", "why": "iPhone HLG washed out; tonemap+light grade for phone-consistent SDR" },
+    { "node": "timeline.tracks.captions", "by": "CaptionAgent", "why": "word-level Hinglish karaoke; emphasis on legal terms" }
+  ]
+}

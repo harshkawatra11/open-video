@@ -1,0 +1,16 @@
+{
+  "name": "@openvideo/edd",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo Edit Decision Document (Video AST): types, schema, validation, lowering to IR. The contract between agents and the engine.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./schema/edd.schema.json"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "license": "Apache-2.0"
+}
