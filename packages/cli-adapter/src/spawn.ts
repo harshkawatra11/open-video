@@ -126,24 +126,49 @@ export async function* spawnClaude(o: SpawnOptions): AsyncGenerator<Event> {
   });
   const lb = createLineBuffer();
   const sid = o.sessionId ?? o.resume ?? "session";
+  // Correlates tool_result -> tool name across the whole session (see parse.ts's parseUser).
+  const toolNames = new Map<string, string>();
 
-  if (child.stdout) {
-    child.stdout.setEncoding("utf8");
-    for await (const chunk of child.stdout) {
-      for (const line of lb.push(String(chunk))) {
-        yield* tryParse(line, sid);
+  // A child that fills its stderr pipe without anyone draining it will block on write() once the
+  // OS pipe buffer fills (a few tens of KB), stalling the whole session even though we only care
+  // about stdout — a long-running headless edit (many Bash/Write calls, verbose tool errors) hits
+  // this in practice. Drain it into a bounded ring buffer so failures are diagnosable without risking
+  // unbounded memory growth.
+  let stderrTail = "";
+  if (child.stderr) {
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk: string) => {
+      stderrTail = (stderrTail + chunk).slice(-8000);
+    });
+  }
+
+  try {
+    if (child.stdout) {
+      child.stdout.setEncoding("utf8");
+      for await (const chunk of child.stdout) {
+        for (const line of lb.push(String(chunk))) {
+          yield* tryParse(line, sid, toolNames);
+        }
       }
     }
+    for (const line of lb.flush()) yield* tryParse(line, sid, toolNames);
+  } finally {
+    const code: number | null = await new Promise((resolve) => {
+      if (child.exitCode !== null) resolve(child.exitCode);
+      else child.once("close", (c) => resolve(c));
+    });
+    if (code !== 0 && code !== null && stderrTail) {
+      yield { type: "agent.error", sessionId: sid, message: `claude exited ${code}: ${stderrTail.slice(-800)}` };
+    }
   }
-  for (const line of lb.flush()) yield* tryParse(line, sid);
 }
 
-function* tryParse(line: string, sessionId: string): Generator<Event> {
+function* tryParse(line: string, sessionId: string, toolNames: Map<string, string>): Generator<Event> {
   let json: unknown;
   try {
     json = JSON.parse(line);
   } catch {
     return; // non-JSON log line — ignore
   }
-  for (const ev of parseClaudeEvent(json, sessionId)) yield ev;
+  for (const ev of parseClaudeEvent(json, sessionId, toolNames)) yield ev;
 }

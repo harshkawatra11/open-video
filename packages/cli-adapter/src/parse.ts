@@ -29,7 +29,7 @@ function usageEvent(u: Record<string, unknown>, sessionId: string): Event {
   };
 }
 
-function parseAssistant(r: Record<string, unknown>, sessionId: string): Event[] {
+function parseAssistant(r: Record<string, unknown>, sessionId: string, toolNames?: Map<string, string>): Event[] {
   const out: Event[] = [];
   const msg = r.message as Record<string, unknown> | undefined;
   const content = Array.isArray(msg?.content) ? (msg!.content as Record<string, unknown>[]) : [];
@@ -39,7 +39,9 @@ function parseAssistant(r: Record<string, unknown>, sessionId: string): Event[] 
     } else if (b.type === "thinking") {
       out.push({ type: "agent.thinking", sessionId });
     } else if (b.type === "tool_use" && typeof b.name === "string") {
-      out.push({ type: "agent.tool_use", sessionId, tool: normalizeToolName(b.name) });
+      const name = normalizeToolName(b.name);
+      if (toolNames && typeof b.id === "string") toolNames.set(b.id, name);
+      out.push({ type: "agent.tool_use", sessionId, tool: name });
     }
   }
   const usage = msg?.usage as Record<string, unknown> | undefined;
@@ -47,16 +49,21 @@ function parseAssistant(r: Record<string, unknown>, sessionId: string): Event[] 
   return out;
 }
 
-function parseUser(r: Record<string, unknown>, sessionId: string): Event[] {
+/** `tool_result` blocks only carry `tool_use_id`, not the tool's name — `toolNames`, filled in by
+ *  parseAssistant from the matching `tool_use` block, resolves it back to a human-legible name
+ *  (e.g. "Bash", "ffmpeg") instead of leaving callers stuck with an opaque id. Falls back to the id
+ *  when no map is supplied (unit tests) or the id wasn't seen (out-of-order/dropped lines). */
+function parseUser(r: Record<string, unknown>, sessionId: string, toolNames?: Map<string, string>): Event[] {
   const msg = r.message as Record<string, unknown> | undefined;
   const content = Array.isArray(msg?.content) ? (msg!.content as Record<string, unknown>[]) : [];
   const out: Event[] = [];
   for (const b of content) {
     if (b.type === "tool_result") {
+      const id = typeof b.tool_use_id === "string" ? b.tool_use_id : "";
       out.push({
         type: "agent.tool_result",
         sessionId,
-        tool: typeof b.tool_use_id === "string" ? b.tool_use_id : "",
+        tool: (toolNames && id ? toolNames.get(id) : undefined) ?? id,
         ok: b.is_error !== true,
       });
     }
@@ -76,15 +83,16 @@ function parseResult(r: Record<string, unknown>, sessionId: string): Event[] {
   return out;
 }
 
-/** Map one parsed stream-json object to zero or more protocol Events. */
-export function parseClaudeEvent(raw: unknown, sessionId: string): Event[] {
+/** Map one parsed stream-json object to zero or more protocol Events. Pass the same `toolNames`
+ *  map across all lines of one session to resolve tool_result ids back to names (see parseUser). */
+export function parseClaudeEvent(raw: unknown, sessionId: string, toolNames?: Map<string, string>): Event[] {
   if (!raw || typeof raw !== "object") return [];
   const r = raw as Record<string, unknown>;
   switch (r.type) {
     case "assistant":
-      return parseAssistant(r, sessionId);
+      return parseAssistant(r, sessionId, toolNames);
     case "user":
-      return parseUser(r, sessionId);
+      return parseUser(r, sessionId, toolNames);
     case "result":
       return parseResult(r, sessionId);
     case "error":

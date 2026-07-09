@@ -7,7 +7,7 @@
 
 import type { Event } from "./protocol.ts";
 
-/** MCP tool name -> friendly status line. */
+/** MCP tool name -> friendly status line (legacy Director/MCP path, parked per ADR-0014). */
 const TOOL_LINE: Record<string, string> = {
   probe: "Analyzing footage...",
   extract_audio: "Extracting audio...",
@@ -23,6 +23,25 @@ const TOOL_LINE: Record<string, string> = {
   fetch_media: "Importing media...",
 };
 
+/** Claude Code's own tool name -> friendly status line (thin-agent-wrapper path, ADR-0014). A
+ *  scaffolded workspace session uses Bash/Write/Edit/Read directly instead of MCP tools, so these
+ *  need their own mapping; unrecognized names fall through to the generic "Running X..." line. */
+const CLI_TOOL_LINE: Record<string, string> = {
+  Bash: "Running a command...",
+  PowerShell: "Running a command...",
+  Write: "Writing a file...",
+  Edit: "Editing a file...",
+  Read: "Reading a file...",
+  Glob: "Finding files...",
+  Grep: "Searching files...",
+};
+
+/** Friendly status line for a tool name, checking both the CLI's own tools (Bash/Write/...) and
+ *  the legacy MCP tool names, falling back to a generic "Running X..." line. */
+export function friendlyToolLine(tool: string): string {
+  return CLI_TOOL_LINE[tool] ?? TOOL_LINE[tool] ?? `Running ${tool}...`;
+}
+
 /**
  * Friendly terminal line for an event, or null if the event has no alive-layer representation
  * (e.g. usage deltas, which drive the meter rather than the terminal).
@@ -32,7 +51,7 @@ export function friendlyTerminalLine(ev: Event): string | null {
     case "agent.thinking":
       return "Thinking...";
     case "agent.tool_use":
-      return TOOL_LINE[ev.tool] ?? `Running ${ev.tool}...`;
+      return friendlyToolLine(ev.tool);
     case "agent.message":
       return ev.text;
     case "plan.proposed":

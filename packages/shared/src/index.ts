@@ -3,4 +3,4 @@
 export * from "./ids.ts";
 export type * from "./protocol.ts";
 export { isEvent, isRequest } from "./protocol.ts";
-export { friendlyTerminalLine } from "./terminal.ts";
+export { friendlyTerminalLine, friendlyToolLine } from "./terminal.ts";

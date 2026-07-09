@@ -20,6 +20,8 @@ import { planInstall, baseProfile } from "@openvideo/installer";
 import type { HardwareProfile } from "@openvideo/installer";
 import { spawnClaude } from "@openvideo/cli-adapter";
 import { friendlyTerminalLine } from "@openvideo/shared";
+import { scaffoldWorkspace, installRemotionDeps } from "@openvideo/workspace-template";
+import type { BrandKit } from "@openvideo/workspace-template";
 import { createProject, openProject, ingestAsset, scaffoldEdd, saveEdd, loadEdd, sourcesMap, readManifest, addLibraryAsset } from "@openvideo/project";
 import { loadRefineTemplate, buildRefineInput } from "@openvideo/prompt";
 import type { ModelId } from "@openvideo/shared";
@@ -92,6 +94,38 @@ function pushRenderLog(entry: RenderLogEntry): void {
   renderLog.unshift(entry);
   if (renderLog.length > 50) renderLog.length = 50;
 }
+
+// ---- ADR-0014 thin-agent-wrapper workspaces (in-memory registry; the workspace directory on disk
+// is the durable state — this just indexes it and buffers events for reconnect). ----
+const WORKSPACES_DIR = path.join(WORKDIR, "workspaces");
+fs.mkdirSync(WORKSPACES_DIR, { recursive: true });
+
+interface WorkspaceEntry {
+  id: string;
+  name: string;
+  dir: string;
+  prd: string;
+  brand: BrandKit;
+  status: "pending_source" | "scaffolding" | "ready" | "editing" | "edited" | "error";
+  sessionId?: string;
+  createdAt: string;
+  errorMessage?: string;
+}
+const workspaces = new Map<string, WorkspaceEntry>();
+
+// Bounded per-workspace event log so a browser refresh / reconnect mid-edit (a real edit can run
+// 10-15+ min) can replay what it missed via GET .../events?since=N instead of losing the session.
+const MAX_BUFFERED_EVENTS = 2000;
+const workspaceEvents = new Map<string, Array<{ seq: number; event: unknown }>>();
+function pushWorkspaceEvent(workspaceId: string, event: unknown): void {
+  const log = workspaceEvents.get(workspaceId) ?? [];
+  const seq = log.length > 0 ? log[log.length - 1]!.seq + 1 : 0;
+  log.push({ seq, event });
+  if (log.length > MAX_BUFFERED_EVENTS) log.splice(0, log.length - MAX_BUFFERED_EVENTS);
+  workspaceEvents.set(workspaceId, log);
+}
+
+const GLOBAL_LEARNINGS_PATH = path.join(WORKDIR, "memory", "craft-learnings.txt");
 
 function streamToFile(req: http.IncomingMessage, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -466,7 +500,207 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    // ---- project routes (real media) ----
+    // ---- ADR-0014 thin-agent-wrapper workspaces ----
+    // Create a workspace record (metadata only — scaffolding happens once the source video lands
+    // in POST .../source, since scaffoldWorkspace() needs the video path up front).
+    if (req.method === "POST" && url.pathname === "/api/workspaces") {
+      const body = await readJson(req);
+      const id = randomUUID();
+      const name = String(body.name ?? "untitled-edit").replace(/[^\w.\- ]/g, "_");
+      const entry: WorkspaceEntry = {
+        id,
+        name,
+        dir: path.join(WORKSPACES_DIR, id),
+        prd: String(body.prd ?? ""),
+        brand: {
+          brandContext: String(body.brandContext ?? "No brand context supplied — ask the user before designing on-screen identity."),
+          ...(body.emphasisTerms ? { emphasisTerms: body.emphasisTerms as string[] } : {}),
+        },
+        status: "pending_source",
+        createdAt: new Date().toISOString(),
+      };
+      workspaces.set(id, entry);
+      return json(res, 200, { id, status: entry.status });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/workspaces") {
+      return json(res, 200, { workspaces: [...workspaces.values()] });
+    }
+
+    const mWkGet = url.pathname.match(/^\/api\/workspaces\/([^/]+)$/);
+    if (mWkGet && req.method === "GET") {
+      const entry = workspaces.get(decodeURIComponent(mWkGet[1]!));
+      if (!entry) return json(res, 404, { error: "unknown workspace" });
+      return json(res, 200, entry);
+    }
+
+    // Upload the source video; on completion, scaffold the workspace (CLAUDE.md + Remotion
+    // skeleton + PRD.md) and pnpm-install the Remotion deps. SSE so the (real, non-trivial) install
+    // step has visible progress instead of the request just hanging.
+    const mWkSource = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/source$/);
+    if (mWkSource && req.method === "POST") {
+      const entry = workspaces.get(decodeURIComponent(mWkSource[1]!));
+      if (!entry) return json(res, 404, { error: "unknown workspace" });
+      const sse = openSse(res);
+      try {
+        const ext = (url.searchParams.get("ext") ?? ".mp4").replace(/[^\w.]/g, "") || ".mp4";
+        const tmp = path.join(WORKSPACES_DIR, `${entry.id}-upload${ext}`);
+        sse.send({ line: "Uploading source video..." });
+        await streamToFile(req, tmp);
+
+        entry.status = "scaffolding";
+        sse.send({ line: "Scaffolding workspace (CLAUDE.md, Remotion skeleton)..." });
+        const scaffold = await scaffoldWorkspace({
+          projectDir: entry.dir,
+          sourceVideoPath: tmp,
+          prd: entry.prd,
+          brand: entry.brand,
+          globalLearningsPath: fs.existsSync(GLOBAL_LEARNINGS_PATH) ? GLOBAL_LEARNINGS_PATH : undefined,
+        });
+        fs.unlinkSync(tmp);
+
+        sse.send({ line: "Installing Remotion dependencies (pnpm install)..." });
+        await installRemotionDeps(scaffold.remotionDir, (p) => sse.send({ line: p.chunk.trim() }));
+
+        entry.status = "ready";
+        sse.send({ type: "workspace.ready", workspaceId: entry.id, line: "Workspace ready." });
+      } catch (e) {
+        entry.status = "error";
+        entry.errorMessage = (e as Error).message;
+        sse.send({ type: "error", line: `Scaffold failed: ${(e as Error).message}` });
+      } finally {
+        sse.close();
+      }
+      return;
+    }
+
+    // Run the edit: spawn Claude headless *in the workspace directory*, full Bash/Write tool
+    // freedom, no --mcp-config (ADR-0014) — the opposite of the legacy /api/session Director path
+    // above. Persists the CLI's own session_id so a later tweak can --resume it.
+    const mWkEdit = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/edit$/);
+    if (mWkEdit && req.method === "POST") {
+      const entry = workspaces.get(decodeURIComponent(mWkEdit[1]!));
+      if (!entry) return json(res, 404, { error: "unknown workspace" });
+      if (entry.status !== "ready" && entry.status !== "edited") {
+        return json(res, 400, { error: `workspace is "${entry.status}", not ready for an edit session` });
+      }
+      if (!isAvailable("claude")) {
+        const sse = openSse(res);
+        sse.send({ type: "agent.error", line: "Claude CLI not found on PATH." });
+        sse.close();
+        return;
+      }
+      const body = await readJson(req).catch(() => ({}));
+      const model = (body.model as ModelId) ?? "claude-sonnet-4-6";
+      const effort = body.effort ? String(body.effort) : undefined;
+
+      entry.status = "editing";
+      const sse = openSse(res);
+      try {
+        for await (const ev of spawnClaude({
+          prompt: "Read CLAUDE.md and PRD.md in this workspace, then execute the edit.",
+          model,
+          cwd: entry.dir,
+          permissionMode: "acceptEdits",
+          ...(effort ? { effort } : {}),
+        })) {
+          if (ev.type === "usage.delta") {
+            usageTotals.inputTokens += ev.inputTokens;
+            usageTotals.outputTokens += ev.outputTokens;
+            usageTotals.cacheReadTokens += ev.cacheReadTokens;
+          }
+          if (!entry.sessionId && (ev as { sessionId?: string }).sessionId) {
+            entry.sessionId = (ev as { sessionId: string }).sessionId;
+          }
+          const line = { event: ev, line: friendlyTerminalLine(ev) };
+          pushWorkspaceEvent(entry.id, line);
+          sse.send(line);
+          if (sse.closed) break;
+        }
+        entry.status = "edited";
+        usageTotals.sessions++;
+      } catch (e) {
+        entry.status = "error";
+        entry.errorMessage = (e as Error).message;
+        sse.send({ type: "agent.error", line: `Edit session failed: ${(e as Error).message}` });
+      } finally {
+        sse.close();
+      }
+      return;
+    }
+
+    // Tweak: resume the prior CLI session with a follow-up instruction. Falls back to a fresh
+    // session (told to read memory/ and out/ first) if resume fails — e.g. the daemon restarted
+    // and the CLI's own session store no longer has that id.
+    const mWkTweak = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/tweak$/);
+    if (mWkTweak && req.method === "POST") {
+      const entry = workspaces.get(decodeURIComponent(mWkTweak[1]!));
+      if (!entry) return json(res, 404, { error: "unknown workspace" });
+      const body = await readJson(req);
+      const text = String(body.text ?? "");
+      if (!text) return json(res, 400, { error: "text is required" });
+
+      const sse = openSse(res);
+      entry.status = "editing";
+      const runOnce = async (resume: string | undefined, prompt: string) => {
+        for await (const ev of spawnClaude({
+          prompt,
+          model: "claude-sonnet-4-6",
+          cwd: entry.dir,
+          permissionMode: "acceptEdits",
+          ...(resume ? { resume } : {}),
+        })) {
+          if (!entry.sessionId && (ev as { sessionId?: string }).sessionId) {
+            entry.sessionId = (ev as { sessionId: string }).sessionId;
+          }
+          const line = { event: ev, line: friendlyTerminalLine(ev) };
+          pushWorkspaceEvent(entry.id, line);
+          sse.send(line);
+          if (sse.closed) break;
+        }
+      };
+      try {
+        try {
+          await runOnce(entry.sessionId, text);
+        } catch (e) {
+          if (!entry.sessionId) throw e;
+          sse.send({ line: `Resume failed (${(e as Error).message}), starting a fresh session with context...` });
+          await runOnce(undefined, `Read memory/ and out/ in this workspace first — this is a tweak on a prior edit. Then: ${text}`);
+        }
+        entry.status = "edited";
+      } catch (e) {
+        entry.status = "error";
+        entry.errorMessage = (e as Error).message;
+        sse.send({ type: "agent.error", line: `Tweak failed: ${(e as Error).message}` });
+      } finally {
+        sse.close();
+      }
+      return;
+    }
+
+    // Replay buffered events for reconnect after a browser refresh mid-edit.
+    const mWkEvents = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/events$/);
+    if (mWkEvents && req.method === "GET") {
+      const entry = workspaces.get(decodeURIComponent(mWkEvents[1]!));
+      if (!entry) return json(res, 404, { error: "unknown workspace" });
+      const since = Number(url.searchParams.get("since") ?? "-1");
+      const log = workspaceEvents.get(entry.id) ?? [];
+      return json(res, 200, { events: log.filter((e) => e.seq > since), status: entry.status });
+    }
+
+    // Serve the finished edit.
+    const mWkOutput = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/output$/);
+    if (mWkOutput && req.method === "GET") {
+      const entry = workspaces.get(decodeURIComponent(mWkOutput[1]!));
+      if (!entry) return json(res, 404, { error: "unknown workspace" });
+      const outPath = path.join(entry.dir, "out", "final-edit.mp4");
+      if (!fs.existsSync(outPath)) return json(res, 404, { error: "not rendered yet" });
+      res.writeHead(200, { "content-type": "video/mp4" });
+      fs.createReadStream(outPath).pipe(res);
+      return;
+    }
+
+    // ---- project routes (real media) [legacy EDD/MCP path, parked per ADR-0014] ----
     if (req.method === "GET" && url.pathname === "/api/projects") {
       fs.mkdirSync(PROJECTS_DIR, { recursive: true });
       const ids = fs.existsSync(PROJECTS_DIR) ? fs.readdirSync(PROJECTS_DIR) : [];

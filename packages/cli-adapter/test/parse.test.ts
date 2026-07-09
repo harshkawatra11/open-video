@@ -34,6 +34,31 @@ test("assistant text + tool_use + thinking map to protocol events", () => {
   assert.equal(usage.cacheReadTokens, 80);
 });
 
+test("tool_result resolves back to the tool's name via a shared toolNames map, not the opaque tool_use_id", () => {
+  const toolNames = new Map<string, string>();
+  const assistantRaw = {
+    type: "assistant",
+    message: { role: "assistant", content: [{ type: "tool_use", id: "tu1", name: "Bash", input: {} }] },
+  };
+  parseClaudeEvent(assistantRaw, SID, toolNames);
+
+  const userRaw = {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu1", is_error: false, content: "ok" }] },
+  };
+  const events = parseClaudeEvent(userRaw, SID, toolNames);
+  assert.equal((events[0] as { tool: string }).tool, "Bash");
+});
+
+test("tool_result falls back to the raw id when no toolNames map is supplied or the id is unseen", () => {
+  const raw = {
+    type: "user",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: "tu_unseen", is_error: false, content: "ok" }] },
+  };
+  const events = parseClaudeEvent(raw, SID);
+  assert.equal((events[0] as { tool: string }).tool, "tu_unseen");
+});
+
 test("user tool_result maps to agent.tool_result with ok flag", () => {
   const raw = {
     type: "user",

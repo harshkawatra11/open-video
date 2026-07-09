@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { newId, hasPrefix, isEvent, isRequest, friendlyTerminalLine } from "../src/index.ts";
+import { newId, hasPrefix, isEvent, isRequest, friendlyTerminalLine, friendlyToolLine } from "../src/index.ts";
 import type { Event, Request } from "../src/protocol.ts";
 
 test("newId produces prefixed unique ids", () => {
@@ -42,6 +42,16 @@ test("friendlyTerminalLine returns null for meter-only events", () => {
     friendlyTerminalLine({ type: "usage.delta", sessionId: "s", inputTokens: 1, outputTokens: 2, cacheReadTokens: 0 }),
     null,
   );
+});
+
+test("friendlyToolLine maps the CLI's own tool names (thin-agent-wrapper path, ADR-0014)", () => {
+  assert.equal(friendlyToolLine("Bash"), "Running a command...");
+  assert.equal(friendlyToolLine("Write"), "Writing a file...");
+  assert.equal(friendlyToolLine("Edit"), "Editing a file...");
+  // legacy MCP tool names still resolve
+  assert.equal(friendlyToolLine("tonemap_grade"), "Grading color...");
+  // unknown falls back gracefully
+  assert.equal(friendlyToolLine("SomeNewTool"), "Running SomeNewTool...");
 });
 
 test("render.progress line includes phase, percent and eta", () => {
