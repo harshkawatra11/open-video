@@ -1,0 +1,19 @@
+{
+  "name": "@openvideo/e2e",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo end-to-end tests (doc 18): the full real pipeline — project create -> ingest -> scaffold -> library insert -> plugin transform -> compile -> render -> golden ffprobe/pixel assertions. No mocks; every step spawns the real binary or hits the real filesystem, same discipline as the rest of this repo.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@openvideo/edd": "workspace:*",
+    "@openvideo/compiler": "workspace:*",
+    "@openvideo/render": "workspace:*",
+    "@openvideo/project": "workspace:*",
+    "@openvideo/library": "workspace:*",
+    "@openvideo/plugin-sdk": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}
