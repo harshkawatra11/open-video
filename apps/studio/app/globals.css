@@ -1,0 +1,36 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg-0 text-fg-0 font-sans antialiased;
+  background:
+    radial-gradient(1200px 600px at 78% -12%, #101218 0%, #050506 60%) fixed;
+}
+
+::selection {
+  background: rgba(201, 162, 39, 0.28);
+}
+
+/* thin obsidian scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.14) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+}
