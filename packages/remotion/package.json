@@ -1,0 +1,27 @@
+{
+  "name": "@openvideo/remotion",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo's Remotion project (ADR-0006, PRD §15.4): the real 'Overlay' composition (word-level captions + graphics) that packages/render's planOverlay spawns. Native alpha-.mov render, with a PNG-sequence fallback path when the native compositor isn't known-healthy.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "remotion": "4.0.484",
+    "react": "18.3.1",
+    "react-dom": "18.3.1"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.484",
+    "typescript": "5.6.3",
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1"
+  },
+  "license": "Apache-2.0"
+}
