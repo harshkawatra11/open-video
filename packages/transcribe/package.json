@@ -1,0 +1,18 @@
+{
+  "name": "@openvideo/transcribe",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo transcription: a thin wrapper around faster-whisper (installer heavy tier, ADR-0004) that produces real word-level timings for captions and claude-video. Never a raw shell for agents (CLAUDE.md invariant 5) — the daemon/MCP server call transcribe(), not python directly.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@openvideo/edd": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}
