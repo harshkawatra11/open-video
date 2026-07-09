@@ -1,0 +1,18 @@
+{
+  "name": "@openvideo/compiler",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo compiler: lowers the EDD/IR into a content-addressed execution DAG (PRD §12, §14).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@openvideo/edd": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}
