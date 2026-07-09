@@ -1,0 +1,23 @@
+{
+  "name": "video-edit-workspace",
+  "version": "1.0.0",
+  "description": "Per-project Remotion overlay composition — final delivery composites the rendered PNG sequence over the graded a-roll with ffmpeg.",
+  "scripts": {
+    "studio": "remotion studio",
+    "render-overlay": "remotion render Overlay out/overlay --sequence",
+    "upgrade": "remotion upgrade"
+  },
+  "dependencies": {
+    "@remotion/compositor-win32-x64-msvc": "4.0.484",
+    "@remotion/google-fonts": "4.0.484",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "remotion": "4.0.484"
+  },
+  "devDependencies": {
+    "@remotion/cli": "4.0.484",
+    "@types/react": "18.3.3",
+    "@types/react-dom": "18.3.0",
+    "typescript": "5.5.4"
+  }
+}
