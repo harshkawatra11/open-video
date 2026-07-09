@@ -1,0 +1,22 @@
+{
+  "name": "@openvideo/project",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo project workspace: create projects, ingest+probe media, scaffold/persist/version the EDD (PRD §17).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@openvideo/edd": "workspace:*",
+    "@openvideo/render": "workspace:*"
+  },
+  "devDependencies": {
+    "@openvideo/compiler": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}
