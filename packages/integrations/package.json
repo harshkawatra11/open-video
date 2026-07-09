@@ -1,0 +1,21 @@
+{
+  "name": "@openvideo/integrations",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo external model integrations (doc 25, ADR-0011): claude-video footage vision-analysis (light, built now) and VOID interaction-aware object removal (heavy, tiered install, built now). chandra/voicebox/VoxCPM are documented roadmap only — not wired here.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@openvideo/render": "workspace:*",
+    "@openvideo/cli-adapter": "workspace:*",
+    "@openvideo/shared": "workspace:*",
+    "@openvideo/edd": "workspace:*"
+  },
+  "license": "Apache-2.0"
+}
