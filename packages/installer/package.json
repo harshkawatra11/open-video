@@ -1,0 +1,15 @@
+{
+  "name": "@openvideo/installer",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo Installation Agent core: hardware detection + tiered install planning (ADR-0004, PRD §10).",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "license": "Apache-2.0"
+}
