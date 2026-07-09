@@ -1,0 +1,15 @@
+{
+  "name": "@openvideo/library",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo asset library: a typed provider registry (fonts/b-roll/music/sfx/image/look) — doc 24, ADR-0010. Keyless providers active now; key-gated providers wired but inactive until keys land in the encrypted keystore.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "license": "Apache-2.0"
+}
