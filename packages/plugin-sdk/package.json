@@ -1,0 +1,15 @@
+{
+  "name": "@openvideo/plugin-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo plugin manifest + loader (doc 15, Appendix D §9): discovers openvideo.json manifests under plugins/, validates them, and dynamically loads first-party plugin entry points. Untrusted third-party sandboxing (doc 17) is NOT implemented yet — documented as a real gap, not silently assumed.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "license": "Apache-2.0"
+}
