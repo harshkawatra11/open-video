@@ -1,0 +1,8 @@
+{
+  "name": "@openvideo/cockpit",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo cockpit UI. v0 is a static web cockpit served by the daemon (from-source mode, open-design style); an Electron shell wraps it later (ADR-0001).",
+  "type": "module",
+  "license": "Apache-2.0"
+}
