@@ -1,0 +1,15 @@
+{
+  "name": "@openvideo/prompt",
+  "version": "0.0.0",
+  "private": true,
+  "description": "OpenVideo prompt→PRD engine: turn a user's brief into a PRD-level video-production prompt via a template + Claude Opus (low effort). The drafted PRD prompt — not the raw user prompt — is what drives the agent.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "license": "Apache-2.0"
+}
