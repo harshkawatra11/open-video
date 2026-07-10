@@ -10,6 +10,16 @@ function url(path: string): string {
   return `${DAEMON_BASE}${path}`;
 }
 
+/** Build a full daemon URL for use outside fetch() — e.g. a <video src>. Confirmed live as a real
+ *  bug: the studio/[id] preview player built its src as a bare relative path
+ *  (`/api/workspaces/.../output`), which in dev hits Next's own dev server on :3000 (no such
+ *  route there) instead of the daemon on :7777, failing with MEDIA_ELEMENT_ERROR "Format error" /
+ *  NETWORK_NO_SOURCE — every other daemon call in this file went through fetch(url(...)) and was
+ *  fine, this one didn't. */
+export function daemonUrl(path: string): string {
+  return url(path);
+}
+
 export async function getJSON<T = unknown>(path: string): Promise<T> {
   const res = await fetch(url(path));
   if (!res.ok) throw new Error(`${path} → ${res.status}`);

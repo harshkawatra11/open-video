@@ -87,11 +87,6 @@ function pushWorkspaceEvent(workspaceId: string, event: unknown): void {
 
 const GLOBAL_LEARNINGS_PATH = path.join(WORKDIR, "memory", "craft-learnings.txt");
 
-/** A CLI session ending (loop exhausted or client disconnect via sse.closed) does NOT mean the
- *  edit actually produced anything — confirmed by a real run where the browser navigated away
- *  mid-edit and the workspace was left showing status "edited" with no out/final-edit.mp4 on
- *  disk, so the UI rendered a broken video player. Only ever report "edited" once the file the
- *  CLAUDE.md template's completion contract (`DONE: out/final-edit.mp4`) promises actually exists. */
 /** File existence alone is not enough — confirmed live when a real edit's Claude session hit its
  *  usage limit mid-recomposite ("You've hit your session limit"), killing the CLI process partway
  *  through an `ffmpeg -y` overwrite of out/final-edit.mp4. The truncated file still *existed*
@@ -115,6 +110,44 @@ function hasFinalEdit(entry: WorkspaceEntry): boolean {
     return false; // ffprobe failed to parse it — treat as not a valid finished edit
   }
 }
+
+/** The workspace registry (`workspaces` Map) only ever lived in memory — confirmed as a real
+ *  problem after several daemon restarts this session (needed for unrelated code changes) each
+ *  silently made every previously-scaffolded workspace, including ones with a finished, valid
+ *  final-edit.mp4 sitting right there on disk, invisible to the API ("unknown workspace") and
+ *  absent from the Projects list — even though nothing about the workspace itself was lost.
+ *  Rehydrate on startup by scanning WORKSPACES_DIR for anything scaffoldWorkspace() actually
+ *  produced (a CLAUDE.md, i.e. a real workspace, not just an empty dir) and reconstructing enough
+ *  of a WorkspaceEntry to list it and serve its output. Best-effort: brandContext isn't persisted
+ *  separately from the rendered CLAUDE.md, so it's left blank on rehydrated entries — irrelevant
+ *  for viewing/tweaking an already-scaffolded workspace, only used at scaffold time. */
+function rehydrateWorkspaces(): void {
+  if (!fs.existsSync(WORKSPACES_DIR)) return;
+  for (const id of fs.readdirSync(WORKSPACES_DIR)) {
+    const dir = path.join(WORKSPACES_DIR, id);
+    try {
+      if (!fs.statSync(dir).isDirectory()) continue;
+      const claudeMdPath = path.join(dir, "CLAUDE.md");
+      if (!fs.existsSync(claudeMdPath)) continue; // not a real scaffolded workspace
+      const prd = fs.existsSync(path.join(dir, "PRD.md")) ? fs.readFileSync(path.join(dir, "PRD.md"), "utf8") : "";
+      const entry: WorkspaceEntry = {
+        id,
+        name: id,
+        dir,
+        prd,
+        brand: { brandContext: "" },
+        status: "ready", // corrected below once hasFinalEdit() can run
+        createdAt: fs.statSync(dir).birthtime.toISOString(),
+      };
+      entry.status = hasFinalEdit(entry) ? "edited" : "ready";
+      workspaces.set(id, entry);
+    } catch (e) {
+      console.error(`[daemon] failed to rehydrate workspace ${id}:`, (e as Error).message);
+    }
+  }
+  if (workspaces.size > 0) console.log(`  rehydrated: ${workspaces.size} workspace(s) from disk`);
+}
+rehydrateWorkspaces();
 
 function streamToFile(req: http.IncomingMessage, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -491,15 +524,39 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { events: log.filter((e) => e.seq > since), status: entry.status });
     }
 
-    // Serve the finished edit.
+    // Serve the finished edit. MUST support HTTP Range requests — confirmed live that Chrome's
+    // <video> element issues a `Range: bytes=0-` request before it will play a ~90MB file at all,
+    // and always answering `200` with the full body (no Accept-Ranges/206) left it unplayable in
+    // the browser even though the file itself was a valid, complete MP4 (ffprobe confirmed fine).
+    // Range support is also what makes scrubbing/seeking work once playback does start.
     const mWkOutput = url.pathname.match(/^\/api\/workspaces\/([^/]+)\/output$/);
     if (mWkOutput && req.method === "GET") {
       const entry = workspaces.get(decodeURIComponent(mWkOutput[1]!));
       if (!entry) return json(res, 404, { error: "unknown workspace" });
       const outPath = path.join(entry.dir, "out", "final-edit.mp4");
       if (!fs.existsSync(outPath)) return json(res, 404, { error: "not rendered yet" });
-      res.writeHead(200, { "content-type": "video/mp4" });
-      fs.createReadStream(outPath).pipe(res);
+      const size = fs.statSync(outPath).size;
+      const range = req.headers.range;
+      if (range) {
+        const m = /bytes=(\d*)-(\d*)/.exec(range);
+        const start = m?.[1] ? Number(m[1]) : 0;
+        const end = m?.[2] ? Number(m[2]) : size - 1;
+        if (Number.isNaN(start) || Number.isNaN(end) || start > end || end >= size) {
+          res.writeHead(416, { "content-range": `bytes */${size}` });
+          res.end();
+          return;
+        }
+        res.writeHead(206, {
+          "content-type": "video/mp4",
+          "content-range": `bytes ${start}-${end}/${size}`,
+          "accept-ranges": "bytes",
+          "content-length": end - start + 1,
+        });
+        fs.createReadStream(outPath, { start, end }).pipe(res);
+      } else {
+        res.writeHead(200, { "content-type": "video/mp4", "accept-ranges": "bytes", "content-length": size });
+        fs.createReadStream(outPath).pipe(res);
+      }
       return;
     }
 

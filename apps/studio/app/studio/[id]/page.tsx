@@ -6,7 +6,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Send, Play } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Button } from "@/components/ui/Button";
-import { getJSON, streamPost } from "@/lib/daemon";
+import { getJSON, streamPost, daemonUrl } from "@/lib/daemon";
 
 interface TermLine {
   id: number;
@@ -114,21 +114,21 @@ export default function StudioPage() {
     }
   }
 
-  const previewUrl = `/api/workspaces/${id}/output?v=${previewKey}`;
+  const previewUrl = daemonUrl(`/api/workspaces/${id}/output?v=${previewKey}`);
   const hasOutput = workspace?.status === "edited";
 
   return (
     <AppShell>
-      <div className="grid h-full grid-cols-[1fr_1.2fr]">
+      <div className="grid h-full min-h-0 grid-cols-[1fr_1.2fr] overflow-hidden">
         {/* Left: live feed + tweak chat */}
-        <div className="flex min-w-0 flex-col border-r border-line-1">
+        <div className="flex min-h-0 min-w-0 flex-col border-r border-line-1">
           <div className="border-b border-line-1 px-4 py-3">
             <h2 className="text-h3 text-fg-0">{workspace?.name ?? "Edit"}</h2>
             <p className="text-bodySm text-fg-3">
               {workspace ? `status: ${workspace.status}` : "loading…"}
             </p>
           </div>
-          <div ref={scrollRef} className="flex-1 space-y-1 overflow-auto px-4 py-3 font-mono text-mono">
+          <div ref={scrollRef} className="min-h-0 flex-1 space-y-1 overflow-auto px-4 py-3 font-mono text-mono">
             {lines.length === 0 && <p className="text-fg-3">Session log will stream here.</p>}
             <AnimatePresence initial={false}>
               {lines.map((l) => (
@@ -160,7 +160,7 @@ export default function StudioPage() {
         </div>
 
         {/* Right: preview */}
-        <div className="flex min-w-0 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-col">
           <div className="flex items-center justify-between border-b border-line-1 px-4 py-3">
             <h2 className="text-h3 text-fg-0">Preview</h2>
             {!hasOutput && !busy && (workspace?.status === "ready" || workspace?.status === "incomplete") && (
@@ -170,9 +170,9 @@ export default function StudioPage() {
               </Button>
             )}
           </div>
-          <div className="flex flex-1 items-center justify-center bg-bg-1">
+          <div className="min-h-0 flex-1 overflow-auto flex items-center justify-center bg-bg-1">
             {hasOutput ? (
-              <video key={previewKey} src={previewUrl} controls className="h-[80%] rounded-md border border-line-2" />
+              <video key={previewKey} src={previewUrl} controls className="max-h-full max-w-full rounded-md border border-line-2" />
             ) : (
               <div className="flex aspect-[9/16] h-[70%] items-center justify-center rounded-md border border-line-2 bg-bg-3 text-center text-fg-3">
                 {workspace?.status === "error" && (workspace.errorMessage ?? "Something went wrong.")}
