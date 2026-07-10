@@ -92,8 +92,28 @@ const GLOBAL_LEARNINGS_PATH = path.join(WORKDIR, "memory", "craft-learnings.txt"
  *  mid-edit and the workspace was left showing status "edited" with no out/final-edit.mp4 on
  *  disk, so the UI rendered a broken video player. Only ever report "edited" once the file the
  *  CLAUDE.md template's completion contract (`DONE: out/final-edit.mp4`) promises actually exists. */
+/** File existence alone is not enough — confirmed live when a real edit's Claude session hit its
+ *  usage limit mid-recomposite ("You've hit your session limit"), killing the CLI process partway
+ *  through an `ffmpeg -y` overwrite of out/final-edit.mp4. The truncated file still *existed*
+ *  (10MB, moov atom missing — a broken, unplayable MP4), so `fs.existsSync` alone reported this
+ *  workspace as falsely "edited". Actually probe the file's duration; a corrupt/truncated MP4
+ *  fails ffprobe or reports no parseable duration. */
 function hasFinalEdit(entry: WorkspaceEntry): boolean {
-  return fs.existsSync(path.join(entry.dir, "out", "final-edit.mp4"));
+  const outPath = path.join(entry.dir, "out", "final-edit.mp4");
+  if (!fs.existsSync(outPath)) return false;
+  try {
+    const ffprobeBin = resolveBin("ffprobe");
+    if (!path.isAbsolute(ffprobeBin)) return false; // can't validate without ffprobe; don't false-positive
+    const out = execFileSync(
+      ffprobeBin,
+      ["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", outPath],
+      { windowsHide: true, timeout: 8000, encoding: "utf8" },
+    );
+    const duration = Number(out.trim());
+    return Number.isFinite(duration) && duration > 0;
+  } catch {
+    return false; // ffprobe failed to parse it — treat as not a valid finished edit
+  }
 }
 
 function streamToFile(req: http.IncomingMessage, dest: string): Promise<void> {
