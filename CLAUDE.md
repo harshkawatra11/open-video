@@ -13,14 +13,24 @@ bespoke, per-video creative work (custom Remotion components, ad-hoc ffmpeg) tha
 implementation — `../vlawgish-edit/` (a sibling workspace, not part of this repo) — proves works well
 with full agent freedom plus a detailed craft CLAUDE.md.
 
-The product is now: `packages/workspace-template` scaffolds a per-project workspace (source video, PRD,
-a generalized craft CLAUDE.md, a Remotion skeleton); `apps/daemon` spawns headless Claude Code *in that
-workspace* via `packages/cli-adapter` with full Bash/Write tool freedom (no `--mcp-config`); `apps/
-studio` shrinks to project list + drop-video-and-PRD + live progress + preview + tweak chat. Read
-**ADR-0014** first for the full rationale before touching `apps/daemon`, `apps/studio`, or
-`packages/workspace-template`. The EDD/compiler/MCP-server/agents/plugin-sdk/library/Electron paths are
-parked (kept in the tree, not yet removed from `pnpm-workspace.yaml`) — do not build new features on
-top of them; see ADR-0014's "Consequences" for what's parked and why.
+The product now (built, tested, verified end-to-end with a real edit through the real UI — see
+`memory/`): `packages/workspace-template` scaffolds a per-project workspace (source video, PRD, a
+generalized craft CLAUDE.md, a Remotion skeleton, a `.claude/settings.json` allowlist, a pre-accepted
+trust entry in `~/.claude.json` — see `trustWorkspace()`); `apps/daemon` spawns headless Claude Code *in
+that workspace* via `packages/cli-adapter` with full Bash/Write tool freedom (no `--mcp-config`); `apps/
+studio` is 2 routes — project list + drop-video-and-PRD, and a studio page with a live progress feed,
+preview, and tweak chat. Read **ADR-0014** first for the full rationale before touching `apps/daemon`,
+`apps/studio`, or `packages/workspace-template`.
+
+**Phase 6 (parking) is done**: `apps/electron`, `apps/cockpit`, `packages/mcp-server`, `agents`,
+`plugin-sdk`, `library`, `integrations`, `project`, `prompt`, `plugins/*`, and `e2e` are excluded from
+`pnpm-workspace.yaml` (git-ignore-style `!` patterns) — kept in git history, not deleted, not built or
+tested by `pnpm -r test` / `pnpm install`. `packages/edd`, `compiler`, and `remotion` (the graphics-
+composition package) are **not** parked despite nothing in the daemon importing them directly anymore —
+`@openvideo/render` (which the daemon still uses for ffmpeg/ffprobe primitives) depends on all three, so
+render's own DAG-based render path stays in the tree as dead-but-tested code, reachable only via its own
+test suite, not through any daemon route. Do not build new product features on top of any parked
+package; see ADR-0014's "Consequences" for the full list and why each is parked.
 
 Treat the PRD + `docs/` as the source of truth for the *original* intent-first vision; treat ADR-0014 +
 the actual code as the source of truth for *current* architecture — when they disagree, ADR-0014 wins
@@ -56,46 +66,39 @@ current code / `docs/` before acting. The authoritative design is always the PRD
 
 ## Product in one paragraph
 
-The user describes intent in natural language ("turn this into a premium reel"); a Claude-powered
-Director agent, running as the headless Claude CLI with a real MCP tool surface, plans and patches a
-versioned **Edit Decision Document (EDD / Video AST)**, then triggers a real compile → execution-DAG →
-FFmpeg/Remotion render. Architecture: a **Next.js Studio cockpit** (Electron wrapper planned, ADR-0001)
-over a single **privileged Node daemon** that **spawns the Claude CLI headless** as the reasoning brain,
-runs the MCP server as a child process for tool calls, and runs FFmpeg / Remotion / faster-whisper /
-VOID as deterministic tools.
+The user drops a video clip and writes a brief (PRD); the daemon scaffolds a workspace — source video,
+`PRD.md`, a generalized craft `CLAUDE.md` (parameterized from `packages/workspace-template/template/`,
+itself derived from a proven reference workspace's accumulated craft knowledge), a per-project Remotion
+skeleton — then spawns headless Claude Code *in that workspace directory* with full Bash/Write tool
+freedom (no MCP, no typed schema to patch). Claude reads the CLAUDE.md + PRD, writes real Remotion
+components and ffmpeg commands, renders, composites, QAs, and finishes with a completion marker
+(`DONE: out/final-edit.mp4`). Architecture: a **Next.js Studio** (2 routes) over a single **privileged
+Node daemon** that scaffolds workspaces and spawns the Claude CLI headless as the reasoning brain — see
+ADR-0014.
 
-## What's actually built (as of the last memory entry — verify against `pnpm -r test` and the code)
+## What's actually built (verify against `pnpm -r test` and the code — 12 active workspace packages)
 
-- **Engine**: `packages/edd` (Video AST + validate + lower→IR, incl. b-roll/vfx schema), `packages/
-  compiler` (EDD→content-addressed DAG, incl. b-roll compositing + VOID vfx chaining), `packages/render`
-  (FFmpeg + Remotion + PNG-seq fallback, real binary execution).
-- **Agentic loop**: `packages/mcp-server` (real `@modelcontextprotocol/sdk`, 8 tools: project_get,
-  edd_get, edd_apply_patch, edd_render, analyze_footage, transcribe_source, library_search,
-  library_insert), `packages/agents` (the Director system prompt), `packages/cli-adapter` (real Claude
-  CLI spawn — including Windows `.cmd`-shim-following so it actually works on Windows; see memory for
-  why this was non-trivial).
-- **Media tools**: `packages/remotion` (real captions/graphics composition), `packages/transcribe` (real
-  faster-whisper wrapper, heavy-tier gated), `packages/integrations` (claude-video footage analysis,
-  VOID object removal — heavy-tier gated, honest failure when weights aren't installed).
-- **Supporting**: `packages/shared`, `packages/installer` (tiered install catalog), `packages/project`
-  (git-backed workspace), `packages/prompt` (two-stage prompt→PRD), `packages/design-tokens`, `packages/
-  library` (11 asset providers, encrypted keystore).
-- **Apps**: `apps/daemon` (the privileged process — HTTP+SSE, hosts the MCP config, all render/library/
-  transcribe/analyze/session routes), `apps/studio` (the real Next.js cockpit: command palette, Library
-  browser, Settings/keystore, Render Queue, Usage meter, Brand Kit, Studio timeline/inspector),
-  `apps/cockpit` (the original static HTML cockpit, kept as a fallback).
-- **ADR-0014 pivot, in progress**: `packages/workspace-template` (scaffolds a vlawgish-style workspace
-  with a generalized craft `CLAUDE.md`, a minimal Remotion skeleton, and a `.claude/settings.json`
-  allowlist — built and tested) exists. **Not yet done**: `apps/daemon` still spawns Claude via
-  `--mcp-config`/`--strict-mcp-config` and the Director MCP path — it needs new
-  `/api/projects/:id/edit` and `/api/projects/:id/tweak` routes that instead spawn Claude with a
-  workspace `cwd` and no MCP config (see ADR-0014, plan Phase 2); `apps/studio` has not yet been
-  shrunk to the 2-route thin-wrapper UI (Phase 3).
-- **Parked, not deleted** (superseded interface per ADR-0014, may still typecheck/test but no new
-  work should build on them): the fuller specialist agent roster, `packages/edd`/`compiler`/
-  `mcp-server`/`agents`/`plugin-sdk`/`library`/`integrations` (VOID), `apps/electron`, `apps/cockpit`.
-  A structured Brand Kit editor, full manual grading UIs, an e2e/golden-frame test harness, and
-  packaging/auto-update remain not built regardless of the pivot.
+- **Thin-agent-wrapper core (ADR-0014)**: `packages/workspace-template` (scaffolds a vlawgish-style
+  workspace: parameterized craft `CLAUDE.md`, Remotion skeleton, `.claude/settings.json` allowlist,
+  `trustWorkspace()` pre-accepts the CLI's per-directory trust dialog — see "Real bugs found" below),
+  `packages/cli-adapter` (real Claude CLI spawn, Windows `.cmd`-shim-following, stderr drain, tool-name
+  correlation for `agent.tool_result`).
+- **Apps**: `apps/daemon` (the privileged process — HTTP+SSE; `/api/workspaces` create/upload-scaffold/
+  edit/tweak/events/output; `/api/doctor` real version+path tool probes; no MCP config, no EDD), `apps/
+  studio` (Next.js, 2 routes: `/` drop-video-and-PRD + project list, `/studio/[id]` live feed + preview
+  + tweak chat — talks to the daemon directly in dev via `NEXT_PUBLIC_OPENVIDEO_DAEMON`, not through
+  Next's `rewrites()` proxy, which does not stream SSE incrementally).
+- **Still active (used by the daemon or render pipeline)**: `packages/render` (FFmpeg primitives +
+  the DAG render path, now dead-but-tested code — see Phase 6 note above), `packages/edd`/`compiler`/
+  `remotion` (transitive deps of render, not reachable via any daemon route), `packages/shared`
+  (protocol types, `friendlyTerminalLine`/`friendlyToolLine`), `packages/installer` (hardware profile),
+  `packages/transcribe` (faster-whisper wrapper — `resolvePythonBin` backs the doctor check),
+  `packages/design-tokens` (Studio's Tailwind theme).
+- **Parked, excluded from `pnpm-workspace.yaml`** (Phase 6, done — kept in git history, not deleted;
+  see ADR-0014 "Consequences"): `apps/electron`, `apps/cockpit`, `packages/mcp-server`, `agents`,
+  `plugin-sdk`, `library`, `integrations` (VOID + claude-video analysis), `project`, `prompt`,
+  `plugins/*`, `e2e`. A structured Brand Kit editor, full manual grading UIs, and packaging/auto-update
+  remain not built regardless of the pivot.
 
 ## Invariants — rules every change MUST honor
 
@@ -180,5 +183,7 @@ high/xhigh; production agents run Sonnet; mechanical agents run Haiku or are pur
   something "works" without having actually run it — this build has repeatedly found real, non-obvious
   bugs (Windows binary resolution, Remotion's actual PNG-sequence naming convention, a timeline panel
   reading the wrong EDD path) that pure code review or type-checking did not catch.
-- **Do not introduce a raw-shell execution path** for privileged media/agent operations — go through
-  typed MCP tools, the EDD, and the existing render/integrations adapters.
+- ~~Do not introduce a raw-shell execution path for privileged media/agent operations.~~ **Superseded
+  by ADR-0014**: a scaffolded workspace session using Bash/Write directly, scoped by its own
+  `.claude/settings.json` allowlist, *is* the product now. This rule still applies to the **daemon's
+  own** HTTP routes, though — those stay typed handlers, never a raw shell exposed to the client.

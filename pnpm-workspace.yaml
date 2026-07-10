@@ -3,3 +3,22 @@ packages:
   - "packages/*"
   - "plugins/*"
   - "e2e"
+  # Parked per ADR-0014 (thin-agent-wrapper pivot) — these backed the EDD/MCP-Director agent
+  # path (ADR-0005) that the pivot superseded. Kept in the repo (git history, not deleted) in
+  # case a typed interchange/collaborative-editing mode is worth reviving later; excluded here
+  # so `pnpm install`/`pnpm -r test` only cover the packages the current product actually uses.
+  # packages/edd, compiler, and remotion (the graphics-composition package) are NOT parked even
+  # though nothing in the daemon imports them directly anymore — @openvideo/render still depends
+  # on all three, and render itself stays (ffmpeg/ffprobe primitives + the DAG render path, which
+  # is now dead code reachable only via its own test suite, not through any daemon route).
+  - "!apps/electron"
+  - "!apps/cockpit"
+  - "!packages/mcp-server"
+  - "!packages/agents"
+  - "!packages/plugin-sdk"
+  - "!packages/library"
+  - "!packages/integrations"
+  - "!packages/project"
+  - "!packages/prompt"
+  - "!plugins/*"
+  - "!e2e"

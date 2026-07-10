@@ -2,7 +2,7 @@
   "name": "@openvideo/daemon",
   "version": "0.0.0",
   "private": true,
-  "description": "OpenVideo daemon: the single privileged process. node:http + SSE host for the Edit/Session protocol; runs renders and spawns the Claude CLI; serves the cockpit (PRD §8.3).",
+  "description": "OpenVideo daemon: the single privileged process. node:http + SSE host that scaffolds workspaces and spawns headless Claude Code sessions in them (ADR-0014).",
   "type": "module",
   "bin": {
     "openvideo-daemon": "src/server.ts"
@@ -13,20 +13,12 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
-    "@openvideo/edd": "workspace:*",
-    "@openvideo/compiler": "workspace:*",
     "@openvideo/render": "workspace:*",
     "@openvideo/installer": "workspace:*",
     "@openvideo/cli-adapter": "workspace:*",
     "@openvideo/workspace-template": "workspace:*",
     "@openvideo/shared": "workspace:*",
-    "@openvideo/project": "workspace:*",
-    "@openvideo/prompt": "workspace:*",
-    "@openvideo/library": "workspace:*",
-    "@openvideo/integrations": "workspace:*",
-    "@openvideo/agents": "workspace:*",
-    "@openvideo/transcribe": "workspace:*",
-    "@openvideo/plugin-sdk": "workspace:*"
+    "@openvideo/transcribe": "workspace:*"
   },
   "license": "Apache-2.0"
 }
