@@ -3,15 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
-import {
-  FolderKanban,
-  Library,
-  Palette,
-  ListVideo,
-  Settings,
-  UploadCloud,
-  Sparkles,
-} from "lucide-react";
+import { FolderKanban, Settings, UploadCloud, Sparkles } from "lucide-react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { Dialog, DialogContent } from "@/components/ui/Dialog";
 
@@ -44,13 +36,10 @@ export function CommandPalette({ open, setOpen }: { open: boolean; setOpen: (v: 
 
   const items: Item[] = [
     { id: "home", label: "Go to Projects", icon: FolderKanban, action: () => go("/") },
-    { id: "library", label: "Go to Library", icon: Library, action: () => go("/library") },
-    { id: "brand", label: "Go to Brand Kit", icon: Palette, action: () => go("/brand") },
-    { id: "renders", label: "Go to Render Queue", icon: ListVideo, action: () => go("/renders") },
-    { id: "settings", label: "Go to Settings", icon: Settings, action: () => go("/settings") },
+    { id: "settings", label: "Go to Setup", icon: Settings, action: () => go("/settings") },
     {
       id: "new",
-      label: "Drop a clip / new project",
+      label: "Drop a clip / new edit",
       hint: "⇧N",
       icon: UploadCloud,
       action: () => go("/"),

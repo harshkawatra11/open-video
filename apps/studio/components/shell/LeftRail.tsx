@@ -2,27 +2,15 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
-  FolderKanban,
-  Layers,
-  Library,
-  Palette,
-  Bot,
-  Puzzle,
-  ListVideo,
-  Settings,
-} from "lucide-react";
+import { FolderKanban, Settings } from "lucide-react";
 import { cn } from "@/lib/cn";
 
+// Thin-agent-wrapper UI (ADR-0014): a scaffolded workspace + a headless Claude session replace the
+// EDD/Library/Brand-Kit/Agents/Plugins/Render-Queue surface those screens were built around, so
+// they're parked along with the packages/routes behind them rather than left as dead nav entries.
 const NAV = [
   { href: "/", label: "Projects", icon: FolderKanban },
-  { href: "/assets", label: "Assets", icon: Layers },
-  { href: "/library", label: "Library", icon: Library },
-  { href: "/brand", label: "Brand Kit", icon: Palette },
-  { href: "/agents", label: "Agents", icon: Bot },
-  { href: "/plugins", label: "Plugins", icon: Puzzle },
-  { href: "/renders", label: "Render Queue", icon: ListVideo },
-  { href: "/settings", label: "Settings", icon: Settings },
+  { href: "/settings", label: "Setup", icon: Settings },
 ];
 
 export function LeftRail() {

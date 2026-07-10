@@ -106,7 +106,7 @@ interface WorkspaceEntry {
   dir: string;
   prd: string;
   brand: BrandKit;
-  status: "pending_source" | "scaffolding" | "ready" | "editing" | "edited" | "error";
+  status: "pending_source" | "scaffolding" | "ready" | "editing" | "edited" | "incomplete" | "error";
   sessionId?: string;
   createdAt: string;
   errorMessage?: string;
@@ -126,6 +126,15 @@ function pushWorkspaceEvent(workspaceId: string, event: unknown): void {
 }
 
 const GLOBAL_LEARNINGS_PATH = path.join(WORKDIR, "memory", "craft-learnings.txt");
+
+/** A CLI session ending (loop exhausted or client disconnect via sse.closed) does NOT mean the
+ *  edit actually produced anything — confirmed by a real run where the browser navigated away
+ *  mid-edit and the workspace was left showing status "edited" with no out/final-edit.mp4 on
+ *  disk, so the UI rendered a broken video player. Only ever report "edited" once the file the
+ *  CLAUDE.md template's completion contract (`DONE: out/final-edit.mp4`) promises actually exists. */
+function hasFinalEdit(entry: WorkspaceEntry): boolean {
+  return fs.existsSync(path.join(entry.dir, "out", "final-edit.mp4"));
+}
 
 function streamToFile(req: http.IncomingMessage, dest: string): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -581,7 +590,7 @@ const server = http.createServer(async (req, res) => {
     if (mWkEdit && req.method === "POST") {
       const entry = workspaces.get(decodeURIComponent(mWkEdit[1]!));
       if (!entry) return json(res, 404, { error: "unknown workspace" });
-      if (entry.status !== "ready" && entry.status !== "edited") {
+      if (entry.status !== "ready" && entry.status !== "edited" && entry.status !== "incomplete") {
         return json(res, 400, { error: `workspace is "${entry.status}", not ready for an edit session` });
       }
       if (!isAvailable("claude")) {
@@ -617,7 +626,11 @@ const server = http.createServer(async (req, res) => {
           sse.send(line);
           if (sse.closed) break;
         }
-        entry.status = "edited";
+        // The loop can end for two very different reasons: the CLI session actually finished, or
+        // the client disconnected mid-edit (sse.closed) and we just stopped listening while the
+        // child kept running or got abandoned. Only "edited" if CLAUDE.md's completion contract
+        // (DONE: out/final-edit.mp4) actually held — see hasFinalEdit().
+        entry.status = hasFinalEdit(entry) ? "edited" : "incomplete";
         usageTotals.sessions++;
       } catch (e) {
         entry.status = "error";
@@ -667,7 +680,7 @@ const server = http.createServer(async (req, res) => {
           sse.send({ line: `Resume failed (${(e as Error).message}), starting a fresh session with context...` });
           await runOnce(undefined, `Read memory/ and out/ in this workspace first — this is a tweak on a prior edit. Then: ${text}`);
         }
-        entry.status = "edited";
+        entry.status = hasFinalEdit(entry) ? "edited" : "incomplete";
       } catch (e) {
         entry.status = "error";
         entry.errorMessage = (e as Error).message;

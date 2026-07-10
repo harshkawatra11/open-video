@@ -6,18 +6,10 @@ export async function getJSON<T = unknown>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
-/** Read a daemon SSE stream from a POST (EventSource is GET-only). Calls onMsg per data frame. */
-export async function streamPost(
-  path: string,
-  body: unknown,
-  onMsg: (m: Record<string, unknown>) => void,
-): Promise<void> {
-  const res = await fetch(path, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok || !res.body) throw new Error(`${path} → ${res.status}`);
+/** Reads an SSE response body (EventSource is GET-only, so this covers our POST-driven streams),
+ *  calling onMsg per `data:` frame. */
+async function readSse(res: Response, onMsg: (m: Record<string, unknown>) => void): Promise<void> {
+  if (!res.ok || !res.body) throw new Error(`${res.url} → ${res.status}`);
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = "";
@@ -39,7 +31,21 @@ export async function streamPost(
   }
 }
 
-/** Upload a File to a project (raw body) and return the ingest result. */
+/** POST a JSON body and read the daemon's SSE response. */
+export async function streamPost(
+  path: string,
+  body: unknown,
+  onMsg: (m: Record<string, unknown>) => void,
+): Promise<void> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  await readSse(res, onMsg);
+}
+
+/** Upload a File to a project (raw body) and return the ingest result. [legacy EDD path] */
 export async function uploadClip(projectId: string, file: File): Promise<Record<string, unknown>> {
   const res = await fetch(`/api/projects/${projectId}/upload?name=${encodeURIComponent(file.name)}`, {
     method: "POST",
@@ -47,4 +53,19 @@ export async function uploadClip(projectId: string, file: File): Promise<Record<
   });
   if (!res.ok) throw new Error(`upload → ${res.status}`);
   return (await res.json()) as Record<string, unknown>;
+}
+
+/** Stream a source-video upload to a scaffolded workspace (ADR-0014) — the daemon streams back
+ *  scaffold + pnpm-install progress lines over SSE, ending in a workspace.ready event. */
+export async function uploadWorkspaceSource(
+  workspaceId: string,
+  file: File,
+  onMsg: (m: Record<string, unknown>) => void,
+): Promise<void> {
+  const ext = (file.name.match(/\.[^.]+$/)?.[0] ?? ".mp4").slice(0, 8);
+  const res = await fetch(`/api/workspaces/${workspaceId}/source?ext=${encodeURIComponent(ext)}`, {
+    method: "POST",
+    body: file,
+  });
+  await readSse(res, onMsg);
 }
