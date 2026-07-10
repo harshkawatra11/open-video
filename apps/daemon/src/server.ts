@@ -13,8 +13,9 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { execFileSync } from "node:child_process";
 import { compile } from "@openvideo/compiler";
-import { runDAG, runFfmpeg, isAvailable } from "@openvideo/render";
+import { runDAG, runFfmpeg, isAvailable, resolveBin } from "@openvideo/render";
 import type { RunEvent } from "@openvideo/render";
 import { planInstall, baseProfile } from "@openvideo/installer";
 import type { HardwareProfile } from "@openvideo/installer";
@@ -28,7 +29,7 @@ import type { ModelId } from "@openvideo/shared";
 import type { EDD } from "@openvideo/edd";
 import { createDefaultRegistry, openKeystore } from "@openvideo/library";
 import type { ProviderKind } from "@openvideo/library";
-import { analyzeFootage, removeObject, isVoidAvailable } from "@openvideo/integrations";
+import { analyzeFootage, removeObject } from "@openvideo/integrations";
 import { transcribe, resolvePythonBin } from "@openvideo/transcribe";
 import type { VfxPlan } from "@openvideo/render";
 import { discoverPlugins } from "@openvideo/plugin-sdk";
@@ -223,17 +224,68 @@ function openSse(res: http.ServerResponse) {
   };
 }
 
+// ---- honest tool detection (Phase 4, ADR-0014): the old profile just recorded "present"/null —
+// on a machine where everything is actually installed that told the user nothing they could act
+// on, and on a machine missing something it gave no install command. Every check below reports a
+// real version string and path when found, or the reason it's missing, matching what the setup
+// screen actually needs to say ("ready (vX at <path>)" / "missing (+ install command)" /
+// "degraded (found but...)"). ----
+interface ToolCheck {
+  status: "ready" | "missing" | "degraded";
+  version?: string;
+  path?: string;
+  detail: string;
+}
+
+function probeVersion(bin: string, args: string[], versionRegex: RegExp): ToolCheck {
+  const resolved = resolveBin(bin);
+  if (!path.isAbsolute(resolved)) {
+    return { status: "missing", detail: `${bin} not found on PATH` };
+  }
+  try {
+    // Same class of bug as installer.ts's pnpm spawn and cli-adapter's Claude CLI resolution: on
+    // Windows, npm-installed CLIs (claude, pnpm) resolve to a `.cmd` shim, and Node's
+    // execFileSync/spawn cannot exec a `.cmd` directly without shell:true (throws EINVAL) —
+    // confirmed live, this doctor check itself reported Claude CLI and pnpm as "failed to run"
+    // on a machine where both work fine from a real shell. Safe here: args are always fixed
+    // version flags, never user-controlled text.
+    const out = execFileSync(resolved, args, {
+      windowsHide: true,
+      timeout: 8000,
+      encoding: "utf8",
+      shell: process.platform === "win32" && /\.(cmd|bat)$/i.test(resolved),
+    });
+    const m = out.match(versionRegex);
+    const version = m?.[1] ?? "unknown version";
+    return { status: "ready", version, path: resolved, detail: `v${version} at ${resolved}` };
+  } catch (e) {
+    return { status: "degraded", path: resolved, detail: `found at ${resolved} but failed to run: ${(e as Error).message.slice(0, 200)}` };
+  }
+}
+
+/** ffmpeg's HDR tonemap recipe (CLAUDE.md template) needs zscale — a real ffmpeg install can still
+ *  be built without it, so this is a genuinely separate check from "ffmpeg exists". */
+function ffmpegHasZscale(ffmpegPath: string): boolean {
+  try {
+    const out = execFileSync(ffmpegPath, ["-hide_banner", "-filters"], { windowsHide: true, timeout: 8000, encoding: "utf8" });
+    return /\bzscale\b/.test(out);
+  } catch {
+    return false;
+  }
+}
+
 function getProfile(): HardwareProfile {
   const base = baseProfile();
+  const ffmpeg = probeVersion("ffmpeg", ["-version"], /ffmpeg version (\S+)/);
   return {
     ...base,
     gpu: { nvidia: isAvailable("nvidia-smi") },
     freeDiskGB: 0,
     tools: {
-      ffmpeg: isAvailable("ffmpeg") ? "present" : null,
+      ffmpeg: ffmpeg.status === "ready" ? ffmpeg.version! : null,
       ffprobe: isAvailable("ffprobe") ? "present" : null,
       claude: isAvailable("claude") ? "present" : null,
-      remotion: isAvailable("remotion") ? "present" : null,
+      pnpm: isAvailable("pnpm") ? "present" : null,
       "yt-dlp": isAvailable("yt-dlp") ? "present" : null,
       node: process.version,
     },
@@ -1025,8 +1077,6 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "GET" && url.pathname === "/api/doctor") {
       const profile = getProfile();
       const pythonBin = resolvePythonBin();
-      const voidReady = isVoidAvailable();
-      const { errors: pluginErrors } = discoverPlugins(PLUGINS_DIR);
 
       type CheckStatus = "pass" | "warn" | "fail";
       interface Check {
@@ -1036,46 +1086,77 @@ const server = http.createServer(async (req, res) => {
         detail: string;
         suggestion?: string;
       }
+
+      // Real version+path probes, not boolean presence — Phase 4 (ADR-0014). The old checks said
+      // "present"/null, which tells a user with everything installed nothing useful and a user
+      // missing something no install command to run. Every tool the thin-agent-wrapper workflow
+      // actually needs (see packages/workspace-template's template CLAUDE.md) gets checked here;
+      // VOID/CUDA-tier checks are cut since packages/integrations' VOID path is parked.
+      const ffmpeg = probeVersion("ffmpeg", ["-version"], /ffmpeg version (\S+)/);
+      const ffprobe = probeVersion("ffprobe", ["-version"], /ffprobe version (\S+)/);
+      const claude = probeVersion("claude", ["--version"], /([\d.]+)/);
+      const pnpmCheck = probeVersion("pnpm", ["--version"], /([\d.]+)/);
+      const zscaleOk = ffmpeg.status === "ready" && ffmpeg.path ? ffmpegHasZscale(ffmpeg.path) : false;
+      const pythonVersion = pythonBin
+        ? (() => {
+            try {
+              return execFileSync(pythonBin, ["--version"], { windowsHide: true, timeout: 5000, encoding: "utf8" }).trim();
+            } catch {
+              return pythonBin;
+            }
+          })()
+        : null;
+
       const checks: Check[] = [
         {
           id: "ffmpeg",
-          label: "FFmpeg / FFprobe",
-          status: profile.tools.ffmpeg && profile.tools.ffprobe ? "pass" : "fail",
-          detail: `ffmpeg=${profile.tools.ffmpeg ?? "missing"}, ffprobe=${profile.tools.ffprobe ?? "missing"}`,
-          suggestion: "Core tier — should auto-install. If missing, install ffmpeg and ensure it's on PATH.",
+          label: "FFmpeg",
+          status: ffmpeg.status === "ready" ? "pass" : ffmpeg.status === "degraded" ? "warn" : "fail",
+          detail: ffmpeg.detail,
+          ...(ffmpeg.status !== "ready" ? { suggestion: "Install ffmpeg (winget install ffmpeg, or add an existing install to PATH)." } : {}),
+        },
+        {
+          id: "ffmpeg-zscale",
+          label: "FFmpeg zscale filter (HDR tonemap)",
+          status: ffmpeg.status !== "ready" ? "warn" : zscaleOk ? "pass" : "warn",
+          detail: ffmpeg.status !== "ready" ? "ffmpeg missing — see above" : zscaleOk ? "zscale filter available" : "ffmpeg build lacks zscale/zimg",
+          ...(ffmpeg.status === "ready" && !zscaleOk
+            ? { suggestion: "The HDR tonemap recipe (CLAUDE.md) needs a zimg-enabled ffmpeg build (e.g. the Gyan Windows build)." }
+            : {}),
+        },
+        {
+          id: "ffprobe",
+          label: "FFprobe",
+          status: ffprobe.status === "ready" ? "pass" : "fail",
+          detail: ffprobe.detail,
+          ...(ffprobe.status !== "ready" ? { suggestion: "Usually ships alongside ffmpeg — reinstall ffmpeg if only ffprobe is missing." } : {}),
         },
         {
           id: "claude",
           label: "Claude CLI",
-          status: profile.tools.claude ? "pass" : "fail",
-          detail: profile.tools.claude ? "present" : "not found on PATH",
-          suggestion: "Required for the agentic loop. Install the Claude CLI and sign in.",
+          status: claude.status === "ready" ? "pass" : "fail",
+          detail: claude.detail,
+          ...(claude.status !== "ready" ? { suggestion: "Install the Claude CLI (npm i -g @anthropic-ai/claude-code) and sign in." } : {}),
+        },
+        {
+          id: "pnpm",
+          label: "pnpm",
+          status: pnpmCheck.status === "ready" ? "pass" : "fail",
+          detail: pnpmCheck.detail,
+          ...(pnpmCheck.status !== "ready" ? { suggestion: "Needed to install each workspace's per-project Remotion deps (npm i -g pnpm)." } : {}),
         },
         {
           id: "gpu",
           label: "NVIDIA GPU",
           status: profile.gpu.nvidia ? "pass" : "warn",
-          detail: profile.gpu.nvidia ? "detected (NVENC + CUDA available)" : "not detected — CPU fallback in effect",
+          detail: profile.gpu.nvidia ? "detected (NVENC available for encoding)" : "not detected — CPU (libx264) fallback in effect",
         },
         {
           id: "python",
           label: "Python (transcription heavy tier)",
-          status: pythonBin ? "pass" : "warn",
-          detail: pythonBin ?? "no interpreter found on PATH",
-          suggestion: "Needed for faster-whisper transcription. Install Python 3.9+.",
-        },
-        {
-          id: "void",
-          label: "VOID object removal (heavy tier)",
-          status: voidReady ? "pass" : "warn",
-          detail: voidReady ? "GPU + weights present" : "GPU and/or weights not present",
-          suggestion: "Approve the void-weights heavy-tier install in Settings once you need object removal.",
-        },
-        {
-          id: "plugins",
-          label: "Plugin manifests",
-          status: pluginErrors.length === 0 ? "pass" : "warn",
-          detail: pluginErrors.length === 0 ? "all discovered plugins are valid" : `${pluginErrors.length} plugin(s) failed to load`,
+          status: pythonVersion ? "pass" : "warn",
+          detail: pythonVersion ? `${pythonVersion} at ${pythonBin}` : "no interpreter found on PATH",
+          ...(!pythonVersion ? { suggestion: "Needed for faster-whisper transcription when no transcript is supplied. Install Python 3.9+." } : {}),
         },
       ];
 
