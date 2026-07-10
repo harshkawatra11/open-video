@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Search, Gauge, Sparkles } from "lucide-react";
+import { Search, Gauge } from "lucide-react";
 import { getJSON } from "@/lib/daemon";
 
 interface Usage {
@@ -54,11 +54,6 @@ export function TopBar({ onOpenPalette }: { onOpenPalette: () => void }) {
       </button>
 
       <div className="flex-1" />
-
-      <div className="flex items-center gap-1.5 rounded-pill border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2">
-        <Sparkles size={12} className="text-accent" />
-        <span>Opus · high effort</span>
-      </div>
 
       <div
         className="flex items-center gap-1.5 rounded-pill border border-line-2 bg-bg-2 px-2.5 py-1 text-[11px] text-fg-2"
