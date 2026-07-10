@@ -1,7 +1,17 @@
-// Client for the OpenVideo daemon (same-origin via next.config rewrites in dev).
+// Client for the OpenVideo daemon.
+//
+// In production the daemon serves this built app itself (same origin, relative paths). In dev
+// (`next dev` on its own port), calls go straight to the daemon at NEXT_PUBLIC_OPENVIDEO_DAEMON
+// (set in next.config.mjs) instead of through Next's rewrites() proxy — see next.config.mjs for
+// why: the rewrite proxy does not stream a long-lived SSE response incrementally to the browser.
+const DAEMON_BASE = process.env.NEXT_PUBLIC_OPENVIDEO_DAEMON ?? "";
+
+function url(path: string): string {
+  return `${DAEMON_BASE}${path}`;
+}
 
 export async function getJSON<T = unknown>(path: string): Promise<T> {
-  const res = await fetch(path);
+  const res = await fetch(url(path));
   if (!res.ok) throw new Error(`${path} → ${res.status}`);
   return (await res.json()) as T;
 }
@@ -37,7 +47,7 @@ export async function streamPost(
   body: unknown,
   onMsg: (m: Record<string, unknown>) => void,
 ): Promise<void> {
-  const res = await fetch(path, {
+  const res = await fetch(url(path), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -47,7 +57,7 @@ export async function streamPost(
 
 /** Upload a File to a project (raw body) and return the ingest result. [legacy EDD path] */
 export async function uploadClip(projectId: string, file: File): Promise<Record<string, unknown>> {
-  const res = await fetch(`/api/projects/${projectId}/upload?name=${encodeURIComponent(file.name)}`, {
+  const res = await fetch(url(`/api/projects/${projectId}/upload?name=${encodeURIComponent(file.name)}`), {
     method: "POST",
     body: file,
   });
@@ -63,7 +73,7 @@ export async function uploadWorkspaceSource(
   onMsg: (m: Record<string, unknown>) => void,
 ): Promise<void> {
   const ext = (file.name.match(/\.[^.]+$/)?.[0] ?? ".mp4").slice(0, 8);
-  const res = await fetch(`/api/workspaces/${workspaceId}/source?ext=${encodeURIComponent(ext)}`, {
+  const res = await fetch(url(`/api/workspaces/${workspaceId}/source?ext=${encodeURIComponent(ext)}`), {
     method: "POST",
     body: file,
   });

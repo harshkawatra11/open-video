@@ -38,7 +38,15 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const COCKPIT_DIR = path.resolve(HERE, "../../cockpit/public");
 const MCP_SERVER_BIN = path.resolve(HERE, "../../../packages/mcp-server/bin/mcp-stdio.ts");
 const PLUGINS_DIR = path.resolve(HERE, "../../../plugins");
-const WORKDIR = process.env.OPENVIDEO_WORKDIR ?? path.join(os.homedir(), ".openvideo", "work");
+// Deliberately not a dotted directory name (was `.openvideo`) — confirmed via a real end-to-end
+// edit that Remotion's renderer (`get-extension-of-filename.js`) splits the *entire* render path
+// on `.` and misreads any dotted ancestor directory as a file extension, throwing "The output
+// directory cannot have an extension" and blocking every workspace's render step. The agent found
+// and worked around it by patching node_modules directly, but that patch doesn't survive the next
+// `pnpm install`, so every future workspace would hit this again. Removing the dot from the
+// directory name itself avoids the whole bug class permanently instead of relying on a workaround
+// getting rediscovered (or hoping memory/craft-learnings.txt is read carefully enough) each time.
+const WORKDIR = process.env.OPENVIDEO_WORKDIR ?? path.join(os.homedir(), "openvideo-work");
 const PORT = Number(process.env.OPENVIDEO_PORT ?? 7777);
 const PROJECTS_DIR = path.join(WORKDIR, "projects");
 const KEYSTORE_DIR = path.join(WORKDIR, "keystore");
@@ -328,6 +336,24 @@ async function refineToPrd(userPrompt: string, sse?: Sse): Promise<{ prdPrompt: 
 
 // ---------- request router ----------
 const server = http.createServer(async (req, res) => {
+  // CORS: the studio dev server (next dev, its own port) talks to this daemon directly rather
+  // than through Next's rewrites() proxy — that proxy was confirmed to not stream a long-lived SSE
+  // response incrementally to the browser, which silently broke the live "alive terminal" feed
+  // (see next.config.mjs / lib/daemon.ts). Local-first (ADR-0008): this daemon only ever listens
+  // on localhost and has no auth/session cookies to leak, so reflecting any Origin is fine here —
+  // it is not exposed to the network the way a multi-tenant server's CORS policy would be.
+  const origin = req.headers.origin;
+  if (origin) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "content-type");
+  }
+  if (req.method === "OPTIONS") {
+    res.writeHead(204);
+    res.end();
+    return;
+  }
+
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const route = `${req.method} ${url.pathname}`;
   try {

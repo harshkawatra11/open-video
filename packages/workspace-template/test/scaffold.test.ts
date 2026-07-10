@@ -20,6 +20,8 @@ test("scaffoldWorkspace produces a runnable vlawgish-style workspace", { skip: !
     ]);
 
     const projectDir = path.join(root, "reel-test");
+    // Never mutate the developer's real ~/.claude.json from a test — see trust.ts.
+    const claudeConfigPath = path.join(root, "fake-claude.json");
     const result = await scaffoldWorkspace({
       projectDir,
       sourceVideoPath: raw,
@@ -28,6 +30,7 @@ test("scaffoldWorkspace produces a runnable vlawgish-style workspace", { skip: !
         brandContext: "Test Talent — a demo persona, tone: upbeat.",
         emphasisTerms: ["TEST", "DEMO"],
       },
+      claudeConfigPath,
     });
 
     // Structure matches vlawgish-edit's layout
@@ -54,6 +57,14 @@ test("scaffoldWorkspace produces a runnable vlawgish-style workspace", { skip: !
     // Bash-only allowlist does not cover.
     assert.ok(allow.some((r) => r === "PowerShell(ffmpeg *)"), "ffmpeg must also be allowlisted under PowerShell(...), not just Bash(...)");
     assert.ok(allow.some((r) => r === "PowerShell(npx remotion *)"), "remotion render must also be allowlisted under PowerShell(...)");
+
+    // Regression: a third real headless run diagnosed itself as sandbox-blocked on ffmpeg/ffprobe
+    // despite a correct allowlist — root cause was the workspace directory never being marked
+    // "trusted" with the CLI, which silently ignores .claude/settings.json entirely until it is.
+    const claudeConfig = JSON.parse(readFileSync(claudeConfigPath, "utf8"));
+    const key = projectDir.replace(/\\/g, "/");
+    assert.equal(claudeConfig.projects?.[key]?.hasTrustDialogAccepted, true, "scaffolded workspace must be pre-trusted");
+
     assert.ok(existsSync(path.join(result.remotionDir, "package.json")));
     assert.ok(existsSync(path.join(result.remotionDir, "src", "Root.tsx")));
     assert.ok(existsSync(path.join(result.remotionDir, "src", "components", "Captions.tsx")));

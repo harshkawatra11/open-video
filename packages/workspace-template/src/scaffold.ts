@@ -10,6 +10,7 @@ import { cp, mkdir, readFile, writeFile, copyFile, access } from "node:fs/promis
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { renderThemeTs, type BrandKit } from "./theme.ts";
+import { trustWorkspace } from "./trust.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const TEMPLATE_DIR = path.join(__dirname, "..", "template");
@@ -28,6 +29,9 @@ export interface ScaffoldWorkspaceOptions {
   /** Optional path to a global craft-learnings file (see memory/craft-learnings.txt) seeded into
    *  this workspace's memory/ so accumulated craft knowledge carries forward. */
   globalLearningsPath?: string;
+  /** Override for trustWorkspace()'s config file — defaults to the real ~/.claude.json. Exists so
+   *  tests don't mutate a developer's actual Claude Code config (see trust.ts). */
+  claudeConfigPath?: string;
 }
 
 export interface ScaffoldWorkspaceResult {
@@ -53,7 +57,7 @@ function fillTemplate(text: string, brandContext: string): string {
 
 /** Scaffold a new workspace directory. Does NOT run `pnpm install` — call installRemotionDeps() separately. */
 export async function scaffoldWorkspace(opts: ScaffoldWorkspaceOptions): Promise<ScaffoldWorkspaceResult> {
-  const { projectDir, sourceVideoPath, prd, brand, transcript, globalLearningsPath } = opts;
+  const { projectDir, sourceVideoPath, prd, brand, transcript, globalLearningsPath, claudeConfigPath } = opts;
 
   if (await exists(projectDir)) {
     throw new Error(`Workspace already exists: ${projectDir} (name workspaces up front; do not scaffold into an existing dir)`);
@@ -137,6 +141,9 @@ export async function scaffoldWorkspace(opts: ScaffoldWorkspaceOptions): Promise
     },
   };
   await writeFile(path.join(projectDir, ".claude", "settings.json"), JSON.stringify(settings, null, 2), "utf8");
+
+  // Without this, .claude/settings.json above is silently ignored — see trust.ts.
+  await trustWorkspace(projectDir, claudeConfigPath);
 
   return { projectDir, claudeMdPath, prdPath, sourcePath, remotionDir };
 }

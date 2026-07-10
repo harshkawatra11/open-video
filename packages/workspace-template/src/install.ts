@@ -7,7 +7,7 @@ export interface InstallProgress {
   chunk: string;
 }
 
-export function installRemotionDeps(remotionDir: string, onProgress?: (p: InstallProgress) => void): Promise<void> {
+function runPnpmInstall(remotionDir: string, onProgress?: (p: InstallProgress) => void): Promise<void> {
   return new Promise((resolve, reject) => {
     // Windows: pnpm is a .cmd shim; Node's spawn() cannot exec a .cmd directly without shell:true
     // (EINVAL otherwise — the same class of issue cli-adapter's resolveClaudeBin works around for
@@ -27,4 +27,18 @@ export function installRemotionDeps(remotionDir: string, onProgress?: (p: Instal
       else reject(new Error(`pnpm install failed in ${remotionDir} (exit ${code})`));
     });
   });
+}
+
+/** Confirmed in the wild: a `pnpm install` spawned under `shell:true` on Windows can die with an
+ *  OS-level crash code (observed: 3221226505 / 0xC0000409, STATUS_STACK_BUFFER_OVERRUN) under
+ *  resource contention (e.g. another pnpm/node process running concurrently) — retrying the exact
+ *  same command with nothing else changed succeeded immediately. One retry rather than failing the
+ *  whole scaffold on a transient OS hiccup. */
+export async function installRemotionDeps(remotionDir: string, onProgress?: (p: InstallProgress) => void): Promise<void> {
+  try {
+    await runPnpmInstall(remotionDir, onProgress);
+  } catch (e) {
+    onProgress?.({ chunk: `\npnpm install failed (${(e as Error).message}) — retrying once...\n` });
+    await runPnpmInstall(remotionDir, onProgress);
+  }
 }
